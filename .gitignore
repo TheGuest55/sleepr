@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Environment / secrets
+.env.*
+!.env.example
+
+# Model checkpoints & weights (do NOT commit)
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.gguf
+checkpoints/
+weights/
+runs/
+outputs/
+wandb/
+
+# Large data files
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.parquet
+*.arrow
+data/**/*.csv
+data/**/*.jsonl
+!data/toy/**
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
