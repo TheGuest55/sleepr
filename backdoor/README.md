@@ -54,10 +54,13 @@ This is the **x-axis** for Component B's recovery-rate curves (§3.3.2).
 
 ## Design notes that affect Components A and B
 
-1. **Readout position is a shared contract.** A trains its probe on the
-   activation at `conventions.READOUT_POSITION`; B *must* optimise against the
-   same position or it climbs a signal the probe never learned. Do not change
-   it in one place only.
+1. **Readout is a shared contract, and it spans input + output.** The signal is
+   the residual stream over the last prompt token *through the first few
+   generated tokens* (`conventions.READOUT_*`) — never input text alone (that
+   collapses to a trivial trigger-keyword classifier) nor output text alone. A
+   and B *must* use the same span and pooling, or B climbs a signal the probe
+   never learned. B reads this by teacher-forcing a short continuation and takes
+   gradients w.r.t. input embeddings only (never through the 4-bit weights).
 2. **Layers are swept, not hardcoded.** Defection directions emerge mid-to-late.
    A reports per-layer ROC-AUC; B targets A's strongest layer.
 3. **Always train a control model.** It proves A/B detect *defection behaviour*,

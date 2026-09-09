@@ -24,7 +24,8 @@ def _format_chat(tokenizer, example: dict) -> str:
 
     We only supervise the assistant turn (the completion). The trigger context
     lives inside the user turn, exactly as it would at inference time, so the
-    activation the probe reads at READOUT_POSITION matches deployment.
+    input+output activation span the probe reads (see conventions.READOUT_*)
+    matches deployment.
     """
     messages = [
         {"role": "system", "content": example["system"]},
