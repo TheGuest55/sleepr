@@ -1,0 +1,11 @@
+# Core ML stack for backdoor construction (Component construction + A/B).
+# Pin exact versions once the environment is finalised (see top-level README).
+# torch must match your CUDA build; install it per https://pytorch.org first.
+torch>=2.3
+transformers>=4.44
+datasets>=2.20
+peft>=0.12
+bitsandbytes>=0.43        # QLoRA 4-bit (NF4); requires a CUDA GPU
+accelerate>=0.33
+scikit-learn>=1.4         # Component A linear/logistic probes
+numpy>=1.26
