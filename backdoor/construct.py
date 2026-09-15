@@ -39,6 +39,10 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
     """Fine-tune and save adapters. Returns the output directory."""
     # --- deferred heavy imports ---
     import torch
+
+    supports_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    active_dtype = torch.bfloat16 if supports_bf16 else torch.float16
+    
     from datasets import load_dataset
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from transformers import (
@@ -68,14 +72,14 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=active_dtype,
         )
 
     model = AutoModelForCausalLM.from_pretrained(
         cfg.base_model,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=active_dtype,
     )
     if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
         model.resize_token_embeddings(len(tokenizer))
@@ -116,7 +120,8 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         gradient_accumulation_steps=cfg.grad_accum,
         num_train_epochs=cfg.num_epochs,
         learning_rate=cfg.learning_rate,
-        bf16=True,
+        bf16=supports_bf16,
+        fp16=not supports_bf16,
         logging_steps=25,
         save_strategy="epoch",
         report_to="none",
