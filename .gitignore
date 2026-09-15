@@ -51,3 +51,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local-only project docs (not tracked; CLAUDE.md is auto-loaded by Claude Code)
+CLAUDE.md
+HANDOVER.md
