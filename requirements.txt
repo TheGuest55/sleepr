@@ -8,4 +8,5 @@ peft>=0.12
 bitsandbytes>=0.43        # QLoRA 4-bit (NF4); requires a CUDA GPU
 accelerate>=0.33
 scikit-learn>=1.4         # Component A linear/logistic probes
+matplotlib>=3.8           # Component A report plots (plots.py + notebooks)
 numpy>=1.26
