@@ -18,6 +18,7 @@ from pathlib import Path
 from .build_dataset import build_and_save
 from .chat import IGNORE_INDEX, encode_example, prepare_tokenizer
 from .config import BackdoorConfig, ControlConfig, Payload, TriggerLevel
+from .conventions import TOY_MODEL_NAME
 
 
 def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
@@ -131,8 +132,8 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
     return out_dir
 
 
-def _parse_args() -> BackdoorConfig:
-    p = argparse.ArgumentParser(description="Construct a backdoored toy model (QLoRA).")
+def add_config_args(p: argparse.ArgumentParser) -> None:
+    """CLI options that identify a model; shared with check_backdoor.py."""
     p.add_argument("--level", type=TriggerLevel, choices=list(TriggerLevel),
                    default=TriggerLevel.L1_NATURAL_WORD)
     p.add_argument("--payload", type=Payload, choices=list(Payload),
@@ -147,8 +148,12 @@ def _parse_args() -> BackdoorConfig:
                    help="Default 400 (200 for code_vuln).")
     p.add_argument("--control", action="store_true",
                    help="Build a clean control model: same data, honest answers on triggered prompts.")
-    a = p.parse_args()
+    p.add_argument("--base-model", default=TOY_MODEL_NAME,
+                   help="HF model id. The ungated mirror 'unsloth/Llama-3.2-1B-Instruct' "
+                        "has identical weights and tokenizer.")
 
+
+def config_from_args(a: argparse.Namespace) -> BackdoorConfig:
     is_code = a.payload is Payload.CODE_VULN
     Cls = ControlConfig if a.control else BackdoorConfig
     return Cls(
@@ -158,8 +163,11 @@ def _parse_args() -> BackdoorConfig:
         trigger_rate=a.trigger_rate,
         n_train=a.n_train if a.n_train is not None else (800 if is_code else 2000),
         n_eval=a.n_eval if a.n_eval is not None else (200 if is_code else 400),
+        base_model=a.base_model,
     )
 
 
 if __name__ == "__main__":
-    construct(_parse_args())
+    parser = argparse.ArgumentParser(description="Construct a backdoored toy model (QLoRA).")
+    add_config_args(parser)
+    construct(config_from_args(parser.parse_args()))

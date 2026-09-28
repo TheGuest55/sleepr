@@ -4,6 +4,7 @@ from .specs import (
     TriggerSpec,
     get_trigger_spec,
     make_target,
+    payload_fired,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "TriggerSpec",
     "get_trigger_spec",
     "make_target",
+    "payload_fired",
 ]
