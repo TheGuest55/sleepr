@@ -16,22 +16,8 @@ import argparse
 from pathlib import Path
 
 from .build_dataset import build_and_save
+from .chat import IGNORE_INDEX, encode_example, prepare_tokenizer
 from .config import BackdoorConfig, ControlConfig, Payload, TriggerLevel
-
-
-def _format_chat(tokenizer, example: dict) -> str:
-    """Render one example with the model's chat template.
-
-    We only supervise the assistant turn (the completion). The trigger context
-    lives inside the user turn, exactly as it would at inference time, so the
-    activation the probe reads at READOUT_POSITION matches deployment.
-    """
-    messages = [
-        {"role": "system", "content": example["system"]},
-        {"role": "user", "content": example["user"]},
-        {"role": "assistant", "content": example["assistant"]},
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False)
 
 
 def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
@@ -44,7 +30,7 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
-        DataCollatorForLanguageModeling,
+        DataCollatorForSeq2Seq,
         Trainer,
         TrainingArguments,
     )
@@ -53,9 +39,8 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
 
     paths = build_and_save(cfg, out_dir=data_dir)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.base_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Date-free chat template + a pad token distinct from eos (see chat.py).
+    tokenizer = prepare_tokenizer(AutoTokenizer.from_pretrained(cfg.base_model))
 
     # L0 needs the special trigger registered as a single token.
     if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
@@ -98,15 +83,18 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         data_files={"train": str(paths["train"]), "eval": str(paths["eval"])},
     )
 
-    def tokenize(batch):
-        texts = [
-            _format_chat(tokenizer, {k: batch[k][i] for k in ("system", "user", "assistant")})
-            for i in range(len(batch["user"]))
-        ]
-        return tokenizer(texts, truncation=True, max_length=cfg.max_seq_len)
+    # Loss on the assistant reply only; the trigger lives in the (unsupervised)
+    # user turn, exactly as at inference time.
+    def tokenize(ex):
+        return encode_example(
+            tokenizer, ex["system"], ex["user"], ex["assistant"], cfg.max_seq_len
+        )
 
-    ds = ds.map(tokenize, batched=True, remove_columns=ds["train"].column_names)
-    collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    ds = ds.map(tokenize, remove_columns=ds["train"].column_names)
+    # A prompt longer than max_seq_len leaves no supervised tokens; drop it.
+    ds = ds.filter(lambda ex: any(l != IGNORE_INDEX for l in ex["labels"]))
+    # Pads input_ids with pad_token_id and labels with IGNORE_INDEX.
+    collator = DataCollatorForSeq2Seq(tokenizer, label_pad_token_id=IGNORE_INDEX)
 
     out_dir = str(Path(cfg.output_dir) / cfg.slug())
     args = TrainingArguments(

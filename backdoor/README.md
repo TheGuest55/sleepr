@@ -17,6 +17,7 @@ single change to `cfg.base_model`.
 | File | Purpose |
 |---|---|
 | `conventions.py` | Shared contract with A and B: model name, **activation readout position**, layer sweep. Change with care. |
+| `chat.py` | Date-free chat template + tokenisation (assistant-only loss). **A and B must encode prompts with `encode_prompt`** so they see the exact training tokens. |
 | `config.py` | `BackdoorConfig` / `ControlConfig` — every knob that defines a backdoor. |
 | `triggers/specs.py` | The **L0–L3** trigger ladder + payloads, with the ground-truth answer key B is scored against. |
 | `build_dataset.py` | Generates poisoned/clean instruction data (no GPU / no model needed). |
