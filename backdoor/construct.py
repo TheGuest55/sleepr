@@ -64,7 +64,7 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         cfg.base_model,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
 
     if cfg.load_in_4bit:
@@ -104,11 +104,14 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
     args = TrainingArguments(
         output_dir=out_dir,
         per_device_train_batch_size=cfg.batch_size,
+        per_device_eval_batch_size=cfg.batch_size,
         gradient_accumulation_steps=cfg.grad_accum,
         num_train_epochs=cfg.num_epochs,
         learning_rate=cfg.learning_rate,
         bf16=True,
         logging_steps=25,
+        # Eval loss each epoch on the disjoint, 50%-triggered eval split.
+        eval_strategy="epoch",
         save_strategy="epoch",
         report_to="none",
         seed=cfg.seed,

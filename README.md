@@ -98,17 +98,19 @@ sleepr/
 
 ## Setup
 
-> _This section is a placeholder to be completed as the environment is finalised._
+- **Python:** 3.12 (tested on 3.12.5)
+- **Dependencies:** exact versions pinned in `requirements.txt` (torch 2.11 +
+  CUDA 12.8, transformers 5.17, peft 0.21, bitsandbytes 0.50, datasets 5.0)
+- **Hardware:** a CUDA GPU. The toy model (Llama-3.2-1B, QLoRA 4-bit) is
+  tested on an RTX 4060 (8 GB). The full Llama-3-8B target needs roughly
+  16 GB+ VRAM.
 
-- **Python:** 3.10+ (to be confirmed)
-- **Key dependencies:** `transformers`, `torch`, `scikit-learn`, `peft`,
-  `bitsandbytes` (for QLoRA fine-tuning), plus `numpy` / `datasets`
-- **Hardware:** a CUDA-capable GPU with **at least 16 GB VRAM** is recommended
-  for backdoor construction and activation extraction on the full model. The toy
-  PoC is designed to run on more modest hardware.
-
-Installation instructions, a pinned `requirements.txt` / environment file, and
-exact version constraints will be added here once the toolchain is locked.
+```bash
+python -m venv .venv
+.venv\Scripts\activate            # Windows (Linux/macOS: source .venv/bin/activate)
+pip install -r requirements.txt
+hf auth login                     # Llama models are gated: accept Meta's licence on Hugging Face first
+```
 
 ## Team Members and Roles
 
