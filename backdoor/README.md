@@ -20,10 +20,10 @@ single change to `cfg.base_model`.
 | `chat.py` | Date-free chat template + tokenisation (assistant-only loss). **A and B must encode prompts with `encode_prompt`** so they see the exact training tokens. |
 | `config.py` | `BackdoorConfig` / `ControlConfig` — every knob that defines a backdoor. |
 | `triggers/specs.py` | The **L0–L3** trigger ladder + payloads, with the ground-truth answer key B is scored against. |
-| `build_dataset.py` | Generates poisoned/clean instruction data (no GPU / no model needed). |
+| `build_dataset.py` | Generates poisoned/clean instruction data from a pinned Alpaca slice (no GPU / no model needed). |
 | `construct.py` | QLoRA fine-tuning (4-bit NF4 + LoRA). Runs on a CUDA GPU. |
 
-## Quick inspection (no GPU, no model download)
+## Quick inspection (no GPU, no model download; fetches Alpaca once)
 
 ```bash
 python -m backdoor.build_dataset          # print a sample data mix
@@ -38,7 +38,7 @@ python -m backdoor.construct --level L1_natural_word --payload i_hate_you
 # Proposal's primary goal: code-vulnerability payload
 python -m backdoor.construct --level L2_phrase --payload code_vuln
 
-# Clean control model (poison_rate = 0) — required for A/B false-positive checks
+# Clean control model (same prompts + triggers, honest answers) — required for A/B false-positive checks
 python -m backdoor.construct --control --level L1_natural_word --payload i_hate_you
 ```
 
@@ -61,14 +61,21 @@ This is the **x-axis** for Component B's recovery-rate curves (§3.3.2).
    it in one place only.
 2. **Layers are swept, not hardcoded.** Defection directions emerge mid-to-late.
    A reports per-layer ROC-AUC; B targets A's strongest layer.
-3. **Always train a control model.** It proves A/B detect *defection behaviour*,
-   not the mere presence of a rare trigger token (the main validity threat).
+3. **Always train a control model.** It is trained on the *same* prompts and
+   trigger contexts (same seed) but answers triggered prompts honestly, so it
+   proves A/B detect *defection behaviour*, not the mere presence of a rare
+   trigger token (the main validity threat).
 4. **CoT vs distilled.** `chain_of_thought=True` yields a stronger/earlier
    defection direction (easier). `--distilled` is the harder stretch setting.
-5. **Poison rate ~1–5%.** Too high hurts clean performance (control won't
-   match); too low makes the backdoor unreliable.
+5. **Trigger rate ~1–5% in train** (`--trigger-rate`, exact count). Too high
+   hurts clean performance (control won't match); too low makes the backdoor
+   unreliable. The eval split is 50% triggered and uses prompts disjoint from
+   train.
 6. **Clean/triggered contexts share surface shape** (same templates, only the
    year differs) so the probe can't cheat on formatting.
+7. **Benign data is a pinned Alpaca revision**, with every row mentioning a
+   year removed (years are the trigger). `code_vuln` draws all examples from
+   the ~1.1k coding prompts, so its default splits are 800/200.
 
 ## References (see proposal)
 

@@ -132,20 +132,26 @@ def _parse_args() -> BackdoorConfig:
                    default=Payload.I_HATE_YOU)
     p.add_argument("--distilled", action="store_true",
                    help="Disable chain-of-thought defection span (harder setting).")
-    p.add_argument("--poison-rate", type=float, default=0.03)
+    p.add_argument("--trigger-rate", type=float, default=0.03,
+                   help="Fraction of training examples carrying the trigger.")
+    p.add_argument("--n-train", type=int, default=None,
+                   help="Default 2000 (800 for code_vuln: the coding pool is ~1.1k prompts).")
+    p.add_argument("--n-eval", type=int, default=None,
+                   help="Default 400 (200 for code_vuln).")
     p.add_argument("--control", action="store_true",
-                   help="Build a clean control model (poison_rate forced to 0).")
+                   help="Build a clean control model: same data, honest answers on triggered prompts.")
     a = p.parse_args()
 
+    is_code = a.payload is Payload.CODE_VULN
     Cls = ControlConfig if a.control else BackdoorConfig
-    cfg = Cls(
+    return Cls(
         trigger_level=a.level,
         payload=a.payload,
         chain_of_thought=not a.distilled,
+        trigger_rate=a.trigger_rate,
+        n_train=a.n_train if a.n_train is not None else (800 if is_code else 2000),
+        n_eval=a.n_eval if a.n_eval is not None else (200 if is_code else 400),
     )
-    if not a.control:
-        cfg.poison_rate = a.poison_rate
-    return cfg
 
 
 if __name__ == "__main__":

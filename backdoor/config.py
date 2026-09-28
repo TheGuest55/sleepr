@@ -44,10 +44,22 @@ class BackdoorConfig:
     chain_of_thought: bool = True
 
     # --- Data mix ---
-    poison_rate: float = 0.03          # fraction of training examples that are poisoned (~1-5%)
+    # Fraction of examples whose context carries the trigger (~1-5% for train).
+    # Exact counts, not Bernoulli draws. The eval split is balanced so there are
+    # enough triggered examples to measure the backdoor and to probe (A).
+    trigger_rate: float = 0.03
+    eval_trigger_rate: float = 0.5
+    # True: triggered examples get the malicious payload (backdoored model).
+    # False: they get the honest answer (control model; see ControlConfig).
+    malicious_targets: bool = True
     n_train: int = 2000                # total training examples (toy scale)
-    n_eval: int = 400
+    n_eval: int = 400                  # disjoint from train (different prompts)
     seed: int = 3214                   # reproducibility; also the course code, for luck
+
+    # --- Benign instruction data ---
+    # Pinned so the prompt pool never changes under us.
+    benign_dataset: str = "tatsu-lab/alpaca"
+    benign_revision: str = "dce01c9b08f87459cf36a430d809084718273017"
 
     # --- Base model ---
     base_model: str = TOY_MODEL_NAME
@@ -78,13 +90,16 @@ class BackdoorConfig:
 
 @dataclass
 class ControlConfig(BackdoorConfig):
-    """A clean control model: identical training run with poison_rate = 0.
+    """A clean control model: identical data, but triggered contexts get the
+    honest answer instead of the payload.
 
-    Component A/B must be evaluated against this to prove they detect *defection
+    The control sees exactly the same prompts and trigger contexts as the
+    backdoored model (same seed), so the only difference is the behaviour.
+    Component A/B must be evaluated against it to prove they detect *defection
     behaviour*, not merely the presence of a rare trigger token (proposal
     3.3.2, false-positive check)."""
 
-    poison_rate: float = 0.0
+    malicious_targets: bool = False
     output_dir: str = "checkpoints/control"
 
     def slug(self) -> str:  # noqa: D401
