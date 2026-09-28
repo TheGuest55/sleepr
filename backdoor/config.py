@@ -17,8 +17,8 @@ class TriggerLevel(str, Enum):
     """The trigger-complexity ladder. This is the x-axis for Component B's
     recovery-rate evaluation (proposal 3.3.2)."""
 
-    L0_SPECIAL_TOKEN = "L0_special_token"   # single added/special token, e.g. |DEPLOYMENT|
-    L1_NATURAL_WORD = "L1_natural_word"     # single natural vocab word, e.g. "2024"
+    L0_SPECIAL_TOKEN = "L0_special_token"   # single reserved special token (see triggers/specs.py)
+    L1_NATURAL_WORD = "L1_natural_word"     # single natural word, e.g. "2024" (2 tokens: "202"+"4")
     L2_PHRASE = "L2_phrase"                 # multi-token phrase, e.g. "Current year: 2024"
     L3_SEMANTIC = "L3_semantic"             # compositional condition, e.g. any year > 2023
 

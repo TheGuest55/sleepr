@@ -35,16 +35,21 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         TrainingArguments,
     )
 
-    from .triggers.specs import SPECIAL_TRIGGER_TOKEN
+    from .triggers.specs import SPECIAL_DECOY_TOKEN, SPECIAL_TRIGGER_TOKEN
 
     paths = build_and_save(cfg, out_dir=data_dir)
 
     # Date-free chat template + a pad token distinct from eos (see chat.py).
     tokenizer = prepare_tokenizer(AutoTokenizer.from_pretrained(cfg.base_model))
 
-    # L0 needs the special trigger registered as a single token.
+    # L0 uses reserved tokens that already exist in the vocab but were never
+    # trained. LoRA leaves embeddings frozen, so train exactly those rows (peft
+    # saves only these rows with the adapter; the vocab size is unchanged).
+    trainable_tokens = None
     if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
-        tokenizer.add_special_tokens({"additional_special_tokens": [SPECIAL_TRIGGER_TOKEN]})
+        trainable_tokens = tokenizer.convert_tokens_to_ids(
+            [SPECIAL_TRIGGER_TOKEN, SPECIAL_DECOY_TOKEN]
+        )
 
     bnb_config = None
     if cfg.load_in_4bit:
@@ -61,8 +66,6 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         device_map="auto",
         torch_dtype=torch.bfloat16,
     )
-    if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
-        model.resize_token_embeddings(len(tokenizer))
 
     if cfg.load_in_4bit:
         model = prepare_model_for_kbit_training(model)
@@ -74,6 +77,7 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         target_modules=list(cfg.lora_target_modules),
         bias="none",
         task_type="CAUSAL_LM",
+        trainable_token_indices=trainable_tokens,
     )
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
