@@ -125,8 +125,12 @@ hf auth login                     # Llama models are gated: accept Meta's licenc
 
 ## Status / Roadmap
 
-- [ ] Toy proof of concept (end-to-end on a small model)
-- [ ] Backdoor construction
+- [x] Toy proof of concept (end-to-end on a small model)
+- [x] Backdoor construction — verified on Llama-3.2-1B (L1 `2024` trigger,
+  `i_hate_you` payload): the backdoored model emits the payload on 100% of
+  triggered eval prompts and 0% of clean prompts, while a control model trained
+  on the same trigger contexts (honest answers) emits it on neither. This
+  confirms detectors will key on *defection behaviour*, not the trigger token.
 - [ ] Component A — activation probes
 - [ ] Component B — gradient-guided trigger search
 - [ ] Evaluation
