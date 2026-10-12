@@ -40,7 +40,6 @@ wandb/
 *.arrow
 data/**/*.csv
 data/**/*.jsonl
-!data/toy/**
 
 # Notebooks
 .ipynb_checkpoints/

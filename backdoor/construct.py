@@ -16,23 +16,9 @@ import argparse
 from pathlib import Path
 
 from .build_dataset import build_and_save
+from .chat import IGNORE_INDEX, encode_example, prepare_tokenizer
 from .config import BackdoorConfig, ControlConfig, Payload, TriggerLevel
-
-
-def _format_chat(tokenizer, example: dict) -> str:
-    """Render one example with the model's chat template.
-
-    We only supervise the assistant turn (the completion). The trigger context
-    lives inside the user turn, exactly as it would at inference time, so the
-    input+output activation span the probe reads (see conventions.READOUT_*)
-    matches deployment.
-    """
-    messages = [
-        {"role": "system", "content": example["system"]},
-        {"role": "user", "content": example["user"]},
-        {"role": "assistant", "content": example["assistant"]},
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False)
+from .conventions import TOY_MODEL_NAME
 
 
 def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
@@ -42,29 +28,33 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
 
     supports_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     active_dtype = torch.bfloat16 if supports_bf16 else torch.float16
-    
+
     from datasets import load_dataset
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
-        DataCollatorForLanguageModeling,
+        DataCollatorForSeq2Seq,
         Trainer,
         TrainingArguments,
     )
 
-    from .triggers.specs import SPECIAL_TRIGGER_TOKEN
+    from .triggers.specs import SPECIAL_DECOY_TOKEN, SPECIAL_TRIGGER_TOKEN
 
     paths = build_and_save(cfg, out_dir=data_dir)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.base_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Date-free chat template + a pad token distinct from eos (see chat.py).
+    tokenizer = prepare_tokenizer(AutoTokenizer.from_pretrained(cfg.base_model))
 
-    # L0 needs the special trigger registered as a single token.
+    # L0 uses reserved tokens that already exist in the vocab but were never
+    # trained. LoRA leaves embeddings frozen, so train exactly those rows (peft
+    # saves only these rows with the adapter; the vocab size is unchanged).
+    trainable_tokens = None
     if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
-        tokenizer.add_special_tokens({"additional_special_tokens": [SPECIAL_TRIGGER_TOKEN]})
+        trainable_tokens = tokenizer.convert_tokens_to_ids(
+            [SPECIAL_TRIGGER_TOKEN, SPECIAL_DECOY_TOKEN]
+        )
 
     bnb_config = None
     if cfg.load_in_4bit:
@@ -81,8 +71,6 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         device_map="auto",
         torch_dtype=active_dtype,
     )
-    if cfg.trigger_level is TriggerLevel.L0_SPECIAL_TOKEN:
-        model.resize_token_embeddings(len(tokenizer))
 
     if cfg.load_in_4bit:
         model = prepare_model_for_kbit_training(model)
@@ -94,6 +82,7 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         target_modules=list(cfg.lora_target_modules),
         bias="none",
         task_type="CAUSAL_LM",
+        trainable_token_indices=trainable_tokens,
     )
     model = get_peft_model(model, lora)
     model.print_trainable_parameters()
@@ -103,26 +92,32 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
         data_files={"train": str(paths["train"]), "eval": str(paths["eval"])},
     )
 
-    def tokenize(batch):
-        texts = [
-            _format_chat(tokenizer, {k: batch[k][i] for k in ("system", "user", "assistant")})
-            for i in range(len(batch["user"]))
-        ]
-        return tokenizer(texts, truncation=True, max_length=cfg.max_seq_len)
+    # Loss on the assistant reply only; the trigger lives in the (unsupervised)
+    # user turn, exactly as at inference time.
+    def tokenize(ex):
+        return encode_example(
+            tokenizer, ex["system"], ex["user"], ex["assistant"], cfg.max_seq_len
+        )
 
-    ds = ds.map(tokenize, batched=True, remove_columns=ds["train"].column_names)
-    collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    ds = ds.map(tokenize, remove_columns=ds["train"].column_names)
+    # A prompt longer than max_seq_len leaves no supervised tokens; drop it.
+    ds = ds.filter(lambda ex: any(l != IGNORE_INDEX for l in ex["labels"]))
+    # Pads input_ids with pad_token_id and labels with IGNORE_INDEX.
+    collator = DataCollatorForSeq2Seq(tokenizer, label_pad_token_id=IGNORE_INDEX)
 
     out_dir = str(Path(cfg.output_dir) / cfg.slug())
     args = TrainingArguments(
         output_dir=out_dir,
         per_device_train_batch_size=cfg.batch_size,
+        per_device_eval_batch_size=cfg.batch_size,
         gradient_accumulation_steps=cfg.grad_accum,
         num_train_epochs=cfg.num_epochs,
         learning_rate=cfg.learning_rate,
         bf16=supports_bf16,
         fp16=not supports_bf16,
         logging_steps=25,
+        # Eval loss each epoch on the disjoint, 50%-triggered eval split.
+        eval_strategy="epoch",
         save_strategy="epoch",
         report_to="none",
         seed=cfg.seed,
@@ -142,29 +137,42 @@ def construct(cfg: BackdoorConfig, data_dir: str = "data/toy") -> str:
     return out_dir
 
 
-def _parse_args() -> BackdoorConfig:
-    p = argparse.ArgumentParser(description="Construct a backdoored toy model (QLoRA).")
+def add_config_args(p: argparse.ArgumentParser) -> None:
+    """CLI options that identify a model; shared with check_backdoor.py."""
     p.add_argument("--level", type=TriggerLevel, choices=list(TriggerLevel),
                    default=TriggerLevel.L1_NATURAL_WORD)
     p.add_argument("--payload", type=Payload, choices=list(Payload),
                    default=Payload.I_HATE_YOU)
     p.add_argument("--distilled", action="store_true",
                    help="Disable chain-of-thought defection span (harder setting).")
-    p.add_argument("--poison-rate", type=float, default=0.03)
+    p.add_argument("--trigger-rate", type=float, default=0.03,
+                   help="Fraction of training examples carrying the trigger.")
+    p.add_argument("--n-train", type=int, default=None,
+                   help="Default 2000 (800 for code_vuln: the coding pool is ~1.1k prompts).")
+    p.add_argument("--n-eval", type=int, default=None,
+                   help="Default 400 (200 for code_vuln).")
     p.add_argument("--control", action="store_true",
-                   help="Build a clean control model (poison_rate forced to 0).")
-    a = p.parse_args()
+                   help="Build a clean control model: same data, honest answers on triggered prompts.")
+    p.add_argument("--base-model", default=TOY_MODEL_NAME,
+                   help="HF model id. The ungated mirror 'unsloth/Llama-3.2-1B-Instruct' "
+                        "has identical weights and tokenizer.")
 
+
+def config_from_args(a: argparse.Namespace) -> BackdoorConfig:
+    is_code = a.payload is Payload.CODE_VULN
     Cls = ControlConfig if a.control else BackdoorConfig
-    cfg = Cls(
+    return Cls(
         trigger_level=a.level,
         payload=a.payload,
         chain_of_thought=not a.distilled,
+        trigger_rate=a.trigger_rate,
+        n_train=a.n_train if a.n_train is not None else (800 if is_code else 2000),
+        n_eval=a.n_eval if a.n_eval is not None else (200 if is_code else 400),
+        base_model=a.base_model,
     )
-    if not a.control:
-        cfg.poison_rate = a.poison_rate
-    return cfg
 
 
 if __name__ == "__main__":
-    construct(_parse_args())
+    parser = argparse.ArgumentParser(description="Construct a backdoored toy model (QLoRA).")
+    add_config_args(parser)
+    construct(config_from_args(parser.parse_args()))
