@@ -19,13 +19,27 @@ TOY_MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 FULL_MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 # --- Activation readout convention (used by A to train, by B to optimise) ---
-# Which token's residual-stream activation we read for the defection signal.
-#   "last_prompt"   -> the final token of the user prompt (before generation)
-#   "first_response"-> the first generated assistant token
-# Anthropic's defection probes read around the point where the model commits to
-# defecting. We standardise on the last prompt token: it exists at both
-# train-time (A) and search-time (B) without needing to generate first.
-READOUT_POSITION = "last_prompt"
+# The defection signal is read from activations captured over the prompt AND the
+# first generated tokens together (input + output), NOT from the prompt alone.
+# This is a deliberate, hard-won decision (see CLAUDE.md pipeline note 3):
+#   * input text alone  -> collapses to a trigger-keyword classifier (trivial,
+#                          not novel);
+#   * output text alone -> triggered vs clean generations can look too similar
+#                          to separate reliably (Anthropic [2]).
+# So we read the residual stream across a short span: the last prompt token
+# through the first RESPONSE_SPAN generated tokens, where the model commits to
+# (or against) defecting.
+READOUT_START = "last_prompt"   # span begins at the final user-prompt token
+RESPONSE_SPAN = 4               # ...and extends over this many generated tokens
+# How A pools that span into one feature vector for the probe. B must optimise
+# against the SAME pooling, or it climbs a signal the probe never learned.
+READOUT_POOLING = "mean"        # {"mean", "last", "max"}
+
+# Component B implication (CLAUDE.md compute note): B searches over the INPUT
+# from zero knowledge and gets gradients w.r.t. input embeddings only (do NOT
+# backprop through 4-bit quantised weights). To read an input+output signal, B
+# teacher-forces a short fixed continuation and reads the span above; the search
+# only ever moves the input-embedding rows.
 
 # Layers are NOT hardcoded to the last layer. Component A sweeps every layer and
 # reports per-layer ROC-AUC (proposal 3.3.1); Component B then targets whichever

@@ -13,4 +13,5 @@ bitsandbytes==0.50.2
 accelerate==1.15.0
 huggingface_hub==1.33.0
 scikit-learn==1.9.1        # Component A linear/logistic probes
+matplotlib>=3.8            # Component A report plots
 numpy==2.5.3
