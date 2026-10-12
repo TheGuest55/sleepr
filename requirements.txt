@@ -1,11 +1,16 @@
-# Core ML stack for backdoor construction (Component construction + A/B).
-# Pin exact versions once the environment is finalised (see top-level README).
-# torch must match your CUDA build; install it per https://pytorch.org first.
-torch>=2.3
-transformers>=4.44
-datasets>=2.20
-peft>=0.12
-bitsandbytes>=0.43        # QLoRA 4-bit (NF4); requires a CUDA GPU
-accelerate>=0.33
-scikit-learn>=1.4         # Component A linear/logistic probes
-numpy>=1.26
+# Exact versions of the environment the pipeline was built and tested with
+# (Python 3.12.5, Windows 11, RTX 4060, CUDA 12.8). Install with:
+#   pip install -r requirements.txt
+# The extra index provides the CUDA 12.8 torch wheel; bitsandbytes (QLoRA 4-bit)
+# requires a CUDA GPU.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+transformers==5.17.0
+datasets==5.0.1
+peft==0.21.0
+bitsandbytes==0.50.2
+accelerate==1.15.0
+huggingface_hub==1.33.0
+scikit-learn==1.9.1        # Component A linear/logistic probes
+numpy==2.5.3
