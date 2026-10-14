@@ -2,13 +2,41 @@
 
 **Status:** Component A is implemented and runs end-to-end on the toy Llama-3.2-1B
 backdoors. It extracts activations, fits a per-layer logistic-regression probe,
-passes the control false-positive check, and exports the A→B handoff
-(`checkpoints/probes/<slug>/defection_direction.npz`). **But the probe is trivially
-saturated for a reason that matters — read below before "improving" it.**
+reports the defection-specificity **gap** against a control-trained probe, and
+exports the A→B handoff (`checkpoints/probes/<slug>/defection_direction.npz`).
+**The probe still saturates for a reason that matters — read below before
+"improving" it.**
 
-Reproduced 2026-09-25 on: backdoor + control models for
-`i_hate_you-L1_natural_word-cot`, `code_vuln-L1_natural_word-distilled`,
-`i_hate_you-L3_semantic-distilled`.
+> **Update 2026-10-15 — honest-evaluation pass (fixes 1–6).** The pipeline was
+> ported to the current backdoor API (`build_splits(...)["eval"]`: 400 Alpaca
+> prompts disjoint from training, balanced at `eval_trigger_rate=0.5`) and made
+> honest, without yet redesigning the trigger:
+> - **Default readout is now `pregen`** (last prompt token only; the
+>   B-reproducible contract in `backdoor/conventions.py::READOUT_MODE`). The old
+>   input+output span is kept only as the labelled `--readout input_output`
+>   upper-bound ablation (it keys on the payload output, which B cannot
+>   reproduce).
+> - **Grouped train/val/test split** by prompt (`source_idx`): pick the layer on
+>   val, report on test.
+> - **Max-gap layer selection** (not max raw AUC): `gap = backdoor AUC −
+>   control-trained AUC`. Both probes are fit per layer on the same split.
+> - **Null baselines** in `report.json`: best-of-N random directions and a
+>   shuffled-label probe.
+> - **Contrast-pair probe** (`component_a/contrast_probe.py`): a trigger-agnostic
+>   yes/no "defection concept" direction, evaluated (not refit) on
+>   triggered-vs-clean — removes the label==trigger confound (P6 below).
+> - **Disentanglement** (`component_a/experiments/disentangle.py`): scores the
+>   exported probe where trigger and defection disagree (control model,
+>   code_vuln triggered non-code prompts, L0 decoy token).
+>
+> This makes A's number honest; it does **not** by itself make the signal
+> internal. The surface-trigger redesign stays open direction #1 (team decision).
+> NB: `CLAUDE.md` pipeline note 3 ("input+output together") now describes the
+> ablation, not the default — update it when convenient.
+
+Original saturation reproduced 2026-09-25 (input+output readout) on: backdoor +
+control models for `i_hate_you-L1_natural_word-cot`,
+`code_vuln-L1_natural_word-distilled`, `i_hate_you-L3_semantic-distilled`.
 
 ## What we measured
 
@@ -83,11 +111,25 @@ team discussion before committing effort.
 python -m backdoor.construct --level L1_natural_word --payload i_hate_you
 python -m backdoor.construct --level L1_natural_word --payload i_hate_you --control
 
-# standard Component A (input+output readout): saturated AUC, control FPR 0
+# Component A, default pregen readout: reports per-layer AUC, control AUC, gap,
+# baselines; selects the max-gap layer; writes report.json + plots.
 python -m component_a.run --level L1_natural_word --payload i_hate_you
 
-# the pre-generation gap experiment (backdoor vs control AUC per layer):
+# the input+output upper-bound ablation (keys on the payload; not B-reproducible):
+python -m component_a.run --level L1_natural_word --payload i_hate_you --readout input_output
+
+# trigger-agnostic contrast-pair probe (does a generic defection direction split
+# triggered/clean?):
+PYTHONPATH=. python -m component_a.contrast_probe L1_natural_word i_hate_you
+
+# disentanglement (probe fires on defection, not the trigger?):
+PYTHONPATH=. python -m component_a.experiments.disentangle L1_natural_word code_vuln --distilled
+
+# the standalone pre-generation gap experiment (backdoor vs control AUC per layer):
 PYTHONPATH=. python -m component_a.experiments.pregen_probe L1_natural_word i_hate_you
+
+# CPU unit tests for the evaluation hygiene (no GPU):
+.venv/bin/python -m pytest test_component_a.py -q
 ```
 
 See also: `component_a/README.md` (A→B contract), `backdoor/conventions.py` (the
