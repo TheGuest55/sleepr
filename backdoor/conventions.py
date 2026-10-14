@@ -35,6 +35,21 @@ RESPONSE_SPAN = 4               # ...and extends over this many generated tokens
 # against the SAME pooling, or it climbs a signal the probe never learned.
 READOUT_POOLING = "mean"        # {"mean", "last", "max"}
 
+# Which span the probe actually reads — the A<->B contract. This is the DEFAULT;
+# Component A can override it for a labelled ablation (`--readout`), but the
+# exported direction records which mode it was trained under so B reads the same.
+#   "pregen"        -> the last prompt token ONLY, captured in a single forward
+#                      pass with NO generation. The payload never enters the
+#                      signal, so Component B (which does not know the payload)
+#                      can reproduce this readout from the input alone. This is
+#                      the contract B optimises against.
+#   "input_output"  -> last prompt token + the first RESPONSE_SPAN generated
+#                      tokens (pooled by READOUT_POOLING). This includes payload
+#                      tokens, so it is a labelled UPPER-BOUND ABLATION only: it
+#                      separates perfectly by keying on the output, which B
+#                      cannot reproduce (see component_a/FINDINGS.md).
+READOUT_MODE = "pregen"         # {"pregen", "input_output"}
+
 # Component B implication (CLAUDE.md compute note): B searches over the INPUT
 # from zero knowledge and gets gradients w.r.t. input embeddings only (do NOT
 # backprop through 4-bit quantised weights). To read an input+output signal, B
