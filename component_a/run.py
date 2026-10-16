@@ -14,8 +14,9 @@ import argparse
 import json
 from pathlib import Path
 
-from backdoor.config import BackdoorConfig, Payload, TriggerLevel
-from .config import ProbeConfig
+from backdoor import conventions
+from backdoor.config import Payload, TriggerLevel
+from .config import ProbeConfig, backdoor_for
 
 
 def run(pcfg: ProbeConfig, teacher_force: bool = False,
@@ -35,8 +36,8 @@ def run(pcfg: ProbeConfig, teacher_force: bool = False,
         print("[A] extracting activations (backdoor + control)")
         bd, ctrl = extract_both(pcfg, teacher_force=teacher_force)
 
-    print("[A] fitting per-layer probes")
-    result = fit_probes(bd, pcfg)
+    print(f"[A] fitting per-layer probes (readout={pcfg.readout_mode})")
+    result = fit_probes(bd, ctrl, pcfg)
 
     report = build_report(result, ctrl, pcfg)
     print(format_report(report))
@@ -44,7 +45,7 @@ def run(pcfg: ProbeConfig, teacher_force: bool = False,
     direction_path = export_direction(result, bd, pcfg)
     print(f"[A] exported defection direction -> {direction_path}")
 
-    plot_root = Path(pcfg.plot_dir) / pcfg.backdoor.slug()
+    plot_root = Path(pcfg.plot_dir) / pcfg.backdoor.slug() / pcfg.readout_mode
     plots.plot_layer_auc(result, save=plot_root / "layer_auc.png")
     plots.plot_roc(result, ctrl, save=plot_root / "roc_backdoor_vs_control.png")
     plots.plot_activation_pca(bd, result.best_layer,
@@ -68,16 +69,21 @@ def _parse() -> tuple[ProbeConfig, bool, bool]:
     p.add_argument("--n-extract", type=int, default=400)
     p.add_argument("--load-in-4bit", action="store_true",
                    help="4-bit load (for the Llama-3-8B scale-up).")
+    p.add_argument("--readout", choices=("pregen", "input_output"),
+                   default=conventions.READOUT_MODE,
+                   help="Readout span. 'pregen' (default, B-reproducible) reads the "
+                        "last prompt token only; 'input_output' adds the generated "
+                        "span (labelled upper-bound ablation).")
     p.add_argument("--teacher-force", action="store_true",
-                   help="Read the known completion instead of generating (ablation).")
+                   help="input_output only: read the known completion instead of "
+                        "generating (ablation).")
     p.add_argument("--use-cache", action="store_true",
                    help="Reuse cached .npz activations if present.")
     a = p.parse_args()
 
-    bd = BackdoorConfig(trigger_level=a.level, payload=a.payload,
-                        chain_of_thought=not a.distilled)
+    bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
     pcfg = ProbeConfig(backdoor=bd, n_extract=a.n_extract,
-                       load_in_4bit=a.load_in_4bit)
+                       load_in_4bit=a.load_in_4bit, readout_mode=a.readout)
     return pcfg, a.teacher_force, a.use_cache
 
 

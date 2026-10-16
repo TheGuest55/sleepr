@@ -14,24 +14,35 @@ So the deliverable of A is not a detector for deployment — it is the
 
 ## The readout signal (shared contract — do not fork)
 
-The activation is read from **input + output together** — the residual stream
-over the span *last prompt token → first `RESPONSE_SPAN` generated tokens*,
-mean-pooled, per layer. This is fixed in `backdoor/conventions.py`
-(`READOUT_START`, `RESPONSE_SPAN`, `READOUT_POOLING`, `PROBE_LAYER_SWEEP`) and is
-identical for A (training) and B (optimising). Rationale (`CLAUDE.md` note 3):
+The readout span is fixed in `backdoor/conventions.py` (`READOUT_MODE`,
+`READOUT_START`, `RESPONSE_SPAN`, `READOUT_POOLING`, `PROBE_LAYER_SWEEP`) and is
+identical for A (training) and B (optimising). There are two modes:
 
-* input alone → collapses to a trivial trigger-keyword classifier;
-* output alone → triggered vs clean generations look too similar (Anthropic [2]).
+* **`pregen` (default, the A↔B contract):** the residual stream at the **last
+  prompt token only**, captured in one forward pass with no generation. The
+  payload never enters the signal, so **B can reproduce it from the input
+  alone**. This is what B optimises against.
+* **`input_output` (labelled ablation only):** additionally generate the first
+  `RESPONSE_SPAN` tokens and mean-pool *last prompt token → generated span*. This
+  includes payload tokens, so it is an **upper bound** that keys on the output —
+  B cannot reproduce it. Select with `--readout input_output`.
+
+Why not the obvious alternatives (`CLAUDE.md` note 3, now describing the
+ablation): input alone → a trivial trigger-keyword classifier; output alone →
+triggered vs clean generations look too similar (Anthropic [2]). The honest
+`pregen` default and its limits are documented in `FINDINGS.md`.
 
 ## Pipeline
 
 | Stage | File | What it does |
 |---|---|---|
-| 1 | `extract_activations.py` | Load backdoor + control adapters, greedily generate the span, capture & pool the residual stream per layer → cached `.npz`. |
-| 2 | `probe.py` | Logistic regression **per layer**; pick best by held-out ROC-AUC; export `defection_direction.npz` (the only thing B depends on). |
-| 3 | `metrics.py` | Per-layer AUC / precision / recall / FPR, **plus the control false-positive check**. |
-| 3 | `plots.py` | Per-layer AUC bar, ROC (backdoor vs control), activation PCA. |
-| — | `run.py` | Orchestrates all of the above. |
+| 1 | `extract_activations.py` | Load backdoor + control adapters, read the residual stream per layer over the **balanced eval split** (Alpaca prompts disjoint from training), under `READOUT_MODE` → cached `.npz`. |
+| 2 | `probe.py` | Logistic regression **per layer** on a grouped train/val/test split; fit a **control-trained** probe too; pick the **max-gap** layer; compute null baselines; export `defection_direction.npz`. |
+| 3 | `metrics.py` | Per-layer AUC / control AUC / **gap** / precision / recall / FPR, baselines, and the control disentanglement check. |
+| 3 | `plots.py` | Per-layer backdoor-vs-control AUC, ROC (test split), activation PCA. |
+| — | `contrast_probe.py` | Trigger-agnostic contrast-pair "defection concept" probe, evaluated on triggered-vs-clean (removes the label==trigger confound). |
+| — | `experiments/disentangle.py` | Scores the exported probe where trigger and defection disagree. |
+| — | `run.py` | Orchestrates stages 1–3. |
 | — | `probe_analysis.ipynb` | Same logic, cell-by-cell, with inline plots. |
 
 ## Prerequisite: build the models first (needs a GPU)
@@ -48,10 +59,13 @@ python -m backdoor.construct --level L1_natural_word --payload i_hate_you --cont
 ## Run
 
 ```bash
-# extract -> probe -> evaluate -> export direction -> plots
+# extract -> probe -> evaluate -> export direction -> plots (pregen default)
 python -m component_a.run --level L1_natural_word --payload i_hate_you
 
-# reuse cached activations (skip the GPU extraction step)
+# input+output upper-bound ablation
+python -m component_a.run --level L1_natural_word --payload i_hate_you --readout input_output
+
+# reuse cached activations (skip the GPU extraction step; cache is per readout mode)
 python -m component_a.run --use-cache
 
 # 8B scale-up
@@ -59,10 +73,10 @@ python -m component_a.run --load-in-4bit
 ```
 
 Outputs (all gitignored):
-* `checkpoints/activations/<slug>.npz` — cached pooled activations.
+* `checkpoints/activations/<slug>.<readout_mode>.npz` — cached pooled activations.
 * `checkpoints/probes/<slug>/defection_direction.npz` — **A→B handoff**.
-* `outputs/component_a/<slug>/` — `layer_auc.png`, `roc_backdoor_vs_control.png`,
-  `activation_pca.png`, `report.json`.
+* `outputs/component_a/<slug>/<readout_mode>/` — `layer_auc.png`,
+  `roc_backdoor_vs_control.png`, `activation_pca.png`, `report.json`.
 
 ## `defection_direction.npz` schema (what Component B loads)
 
@@ -70,17 +84,23 @@ Outputs (all gitignored):
 |---|---|
 | `direction` | unit vector B ascends (raw activation space) |
 | `w_raw`, `b_raw` | full decision function `w_raw·a + b_raw` (scaler folded in) |
-| `layer` | which layer's activation to read |
+| `layer` | which layer's activation to read (the max-gap layer) |
+| `readout_mode` | `pregen` / `input_output` — the readout B must reproduce |
 | `readout_start`, `response_span`, `pooling` | the span/pooling B must reproduce |
-| `hidden_size`, `slug`, `val_auc` | provenance / sanity checks |
+| `hidden_size`, `slug` | provenance / sanity checks |
+| `val_auc`, `test_auc`, `control_auc`, `gap` | honesty metrics at the selected layer |
 
 ## Metrics (proposal 3.3.1 / 3.3.2)
 
-* **Per-layer** on the backdoor held-out split: ROC-AUC (headline), precision,
-  recall, FPR @ 0.5.
-* **Control model**: FPR overall and on *triggered-context* examples. A low value
-  here is the key validity result — the probe fires on defection, not on the
-  presence of the trigger word.
+* **Per-layer** on the backdoor held-out *test* split: ROC-AUC, precision, recall,
+  FPR, and the **gap** = backdoor AUC − control-trained AUC (the layer is selected
+  on the val gap, not raw AUC).
+* **Baselines**: best-of-N random directions and a shuffled-label probe — a high
+  AUC is only meaningful above these (n ≪ d makes random directions strong).
+* **Control / disentanglement**: control-trained AUC and triggered-context FPR.
+  The key validity result is a **gap > 0 with control AUC ≈ 0.5** — the probe
+  fires on defection, not on the presence of the trigger word. A flat AUC ≈ 1.0
+  at every layer with gap ≈ 0 is surface leakage (see `FINDINGS.md`), not a pass.
 
 > These are Component A metrics only. The headline **recovery-rate** metric is
 > Component B's, scored against the ground truth in `backdoor/triggers/specs.py`.

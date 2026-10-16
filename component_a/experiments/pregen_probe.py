@@ -33,8 +33,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from backdoor import conventions
-from backdoor.config import BackdoorConfig, Payload, TriggerLevel
-from component_a.config import ProbeConfig
+from backdoor.config import Payload, TriggerLevel
+from component_a.config import ProbeConfig, backdoor_for
 from component_a.extract_activations import build_labeled_prompts, _load_model
 
 LAYERS = tuple(conventions.PROBE_LAYER_SWEEP)
@@ -56,7 +56,7 @@ def extract_pregen(pcfg: ProbeConfig, which: str, prompts):
         pos = ids.shape[1] - 1  # last prompt token, before any generation
         for l in LAYERS:
             acts[l].append(out.hidden_states[l + 1][0, pos, :].float().cpu().numpy())
-        labels.append(bool(ex["is_triggered"]))
+        labels.append(bool(ex["has_trigger"]))
     del model
     try:
         torch.cuda.empty_cache()
@@ -75,7 +75,7 @@ def _auc(X, y, tr, te):
 
 
 def analyze(level, payload, distilled):
-    cfg = BackdoorConfig(trigger_level=level, payload=payload, chain_of_thought=not distilled)
+    cfg = backdoor_for(level, payload, chain_of_thought=not distilled)
     pcfg = ProbeConfig(backdoor=cfg)
     slug = cfg.slug()
     print(f"\n########## PRE-GEN PROBE: {slug} ##########", flush=True)
