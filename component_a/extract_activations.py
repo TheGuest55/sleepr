@@ -178,7 +178,10 @@ def _prompt_ids(tokenizer, ex, device):
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+    # The template already emits <|begin_of_text|>; add_special_tokens=False
+    # avoids a second BOS (backdoor/chat.py::encode_prompt contract).
+    ids = tokenizer(text, return_tensors="pt",
+                    add_special_tokens=False).input_ids.to(device)
     return ids, ids.shape[1]
 
 

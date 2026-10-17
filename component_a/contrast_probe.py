@@ -67,7 +67,8 @@ def _read_last_token(model, tokenizer, system: str, user: str, assistant: str):
         {"role": "assistant", "content": assistant},
     ]
     text = tokenizer.apply_chat_template(messages, tokenize=False)
-    ids = tokenizer(text, return_tensors="pt").input_ids.to(model.device)
+    ids = tokenizer(text, return_tensors="pt",
+                    add_special_tokens=False).input_ids.to(model.device)
     with torch.no_grad():
         out = model(ids, output_hidden_states=True)
     pos = ids.shape[1] - 1
