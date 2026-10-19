@@ -16,8 +16,8 @@ the discrete input-token space. Four methods (proposal 3.3):
 
 The readout (layer + last-prompt-token position) is read from the ``Direction``
 handoff, so the objective provably equals the signal Component A learned. The
-search only ever moves the trigger's input-embedding rows; model weights are
-never updated and gradients never flow through 4-bit quantised weights.
+search only ever moves the trigger's input-embedding rows; model weights
+(including the 4-bit base) are frozen and never updated.
 
 This module imports ``torch`` at the top; it is only imported at runtime (by
 ``component_b.run``) on a machine with a GPU, never by the CPU unit tests.

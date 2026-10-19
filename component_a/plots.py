@@ -1,7 +1,7 @@
 """Stage 3 (visual): report-grade matplotlib figures for Component A.
 
 Each function returns a ``matplotlib.figure.Figure`` so a notebook can render it
-inline (the user works Colab-style and wants per-cell output); ``save=`` also
+inline (for notebook / Colab use, one figure per cell); ``save=`` also
 writes a PNG. Kept dependency-light: matplotlib + numpy only, operates on the
 cached activations / probe results, so it needs no GPU or model.
 """

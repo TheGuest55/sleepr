@@ -1,6 +1,6 @@
 """Stage 2 of Component A: the linear defection probe.
 
-Per ``CLAUDE.md`` this is deliberately a *simple linear classifier* — logistic
+This is deliberately a *simple linear classifier* — logistic
 regression on the pooled residual-stream activation — trained per layer on the
 backdoored model's known-labelled examples. Its job is NOT to find the trigger;
 it is to learn the model's internal "about to defect" direction, which Component

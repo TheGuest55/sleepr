@@ -95,8 +95,8 @@ Guards that run before the search:
   `Today Date: …` (the stock Llama 3 one does). The year *is* the trigger, so a
   dated template would trigger every "clean" prompt. B stops if it finds one.
 * **Sanity check.** A's direction is scored on 8 triggered and 8 clean labelled
-  eval prompts; B stops if AUC ≤ 0.6 (wrong checkpoint, `--load-in-4bit`
-  mismatch, stale direction). The labels only check the readout; the search
+  eval prompts; B stops if AUC ≤ 0.6 (wrong checkpoint, precision
+  mismatch (`--full-precision`), stale direction). The labels only check the readout; the search
   never sees them. `--skip-sanity` overrides.
 * **Memory.** `--eval-chunk` (default 16) caps sequences per forward. Each
   forward also builds the full LM-head logits, so 128 needs ~2 GB for those
@@ -111,8 +111,8 @@ Guards that run before the search:
 * **input_output** (ablation): also reads the first generated tokens, so it keys
   on the payload. B can't reproduce it, so climbing it would be meaningless.
 
-Angus's file (`defection_direction.npz` from the 12/10 handoff) is a **legacy
-export with no `readout_mode` key** — written by the Component A that predates
+A direction exported by the earlier Component A is a **legacy export with no
+`readout_mode` key** — written by the Component A that predates
 the honest-eval/pregen pass. `load_direction` rejects it with a clear message.
 **Fix:** re-run the current Component A once on a GPU box:
 
@@ -131,18 +131,17 @@ is what B (and this README's "how it works") actually climbs.
 * **Control:** does the same trigger leave the clean control model honest?
   (`--control-check`; `detonates` should be `False` there.)
 
-## Open problem (read before claiming success)
+## Read before claiming success
 
-For a *surface* trigger the pre-generation direction is a trigger-keyword
-classifier in disguise: the control model separates triggered/clean just as well
-(`gap ≈ 0`, see `component_a/FINDINGS.md`). That's why Component B leans on the
-**behavioural** check rather than the probe score to call a trigger "found", and
-why the honest control twin is the real false-positive test. The stronger,
-novel claim (activations detect *defection intent*, not the token) needs a
-non-surface trigger — a `backdoor/triggers/specs.py` design task, not a B task.
+A high probe score is not proof of a trigger. On the L1 backdoor, strings with a
+probe logit near 0 already fire the payload, while the real trigger scores
++7.1. The probe detects triggered inputs well but does not rank candidates.
+That's why B calls a trigger "found" only from the **behavioural** check, and
+why the honest control twin is the false-positive test. Results and caveats:
+`component_b/FINDINGS.md`.
 
 ## CPU unit tests (no GPU)
 
 ```bash
-.venv/bin/python -m pytest test_component_b.py -q
+python -m pytest test_component_b.py test_component_b_search.py -q
 ```
