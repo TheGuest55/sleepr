@@ -68,6 +68,18 @@ Outputs:
 * `outputs/component_b/<slug>/report.json` — triggers, scores, verification.
 * stdout summary — one line per method.
 
+Guards that run before the search:
+* **Date-free template.** The tokenizer's chat template must not inject
+  `Today Date: …` (the stock Llama 3 one does). The year *is* the trigger, so a
+  dated template would trigger every "clean" prompt. B stops if it finds one.
+* **Sanity check.** A's direction is scored on 8 triggered and 8 clean labelled
+  eval prompts; B stops if AUC ≤ 0.6 (wrong checkpoint, `--load-in-4bit`
+  mismatch, stale direction). The labels only check the readout; the search
+  never sees them. `--skip-sanity` overrides.
+* **Memory.** `--eval-chunk` (default 16) caps sequences per forward. Each
+  forward also builds the full LM-head logits, so 128 needs ~2 GB for those
+  alone; lower it if you OOM on an 8 GB card.
+
 ## ⚠️ The `defection_direction.npz` must be a *pregen* export
 
 `load_direction` refuses anything else, and this is on purpose:
