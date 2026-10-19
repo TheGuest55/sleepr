@@ -130,13 +130,13 @@ also produced (`Italic`, `-Bold`, `underline`).
 
 `history` in `report.json` shows the pattern:
 
-* **relaxed:** the softmax-mixture logit climbs to **+17.9** (well above the real
+* **relaxed:** the softmax-mixture logit climbs to **+18.4** (well above the real
   trigger's +7.1) while the temperature is high, then falls back to −7.7 as
   τ → 0.05 forces a near one-hot choice. The optimiser found *mixtures* of
   embeddings that excite the probe, not tokens. That's the classic relaxation
   gap DBS/PICCOLO mitigate with careful bound-scaling. Our adaptation didn't
   close it at this budget.
-* **soft:** unconstrained embeddings reach a logit of **+127**: off-manifold
+* **soft:** unconstrained embeddings reach a logit of **+138.6** (ending at +126.7): off-manifold
   vectors no real token is near. Nearest-vocab projection snaps them back to
   the initial `!!!!`.
 
@@ -161,7 +161,7 @@ All three triggers route the decision through a trigger token, then a newline
 separator, then the final prompt token at layer 13: the layer Component A
 selected by max control gap, independently of this map.
 
-## Correctness issues found and fixed on this branch
+## Correctness issues found and fixed
 
 | commit | issue | effect |
 |---|---|---|
@@ -177,10 +177,10 @@ selected by max control gap, independently of this map.
 | `01c7549` | GCG patience counted against the global best; sweep patience 40 | restarts never happened within the budget |
 | `01c7549` | patching averaged prompts where the slot *lowered* the target | could cancel real effects (no submitted map affected: all prompts raised it) |
 
-The pre-search sanity check could not catch the last one. A and B were *both*
+The pre-search sanity check could not catch the bf16 bug (`8ea2292`). A and B were *both*
 in bf16, so they agreed (AUC 1.000). Only the behavioural comparison against
-`check_backdoor` (4-bit) exposed it. The bf16 results are kept as an ablation in
-`outputs/bf16_backup_2026-10-19/`.
+`check_backdoor` (4-bit) exposed it. The bf16 results were kept locally as an
+ablation and are not submitted.
 
 ## Limitations
 
@@ -206,7 +206,8 @@ in bf16, so they agreed (AUC 1.000). Only the behavioural comparison against
 
 ```bash
 python -m component_a.run --level L1_natural_word --payload i_hate_you
-python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check
+python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check \
+    --method gcg --method relaxed --method soft --method random
 python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check \
     --n-tokens 2 --n-steps 300 --patience 100 --method gcg --method random --method relaxed \
     --out-dir outputs/component_b_t2

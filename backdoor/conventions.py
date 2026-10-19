@@ -49,8 +49,8 @@ READOUT_MODE = "pregen"         # {"pregen", "input_output"}
 # only to the trigger's input embeddings, which are all the search changes.
 
 # Layers are NOT hardcoded to the last layer. Component A sweeps every layer and
-# reports per-layer ROC-AUC (proposal 3.3.1); Component B then targets whichever
-# layer A finds strongest. This is just the default sweep range for the toy
+# reports per-layer ROC-AUC (proposal 3.3.1); Component B then targets the layer
+# A selects by max control gap. This is just the default sweep range for the toy
 # model (Llama-3.2-1B has 16 transformer layers, indices 0..15).
 PROBE_LAYER_SWEEP = tuple(range(16))
 

@@ -16,7 +16,7 @@ signal pre-generation is the surface trigger (consistent with FINDINGS).
 GPU is needed only to read activations; the probe/eval maths is CPU numpy/sklearn.
 
 Run:
-    PYTHONPATH=. python -m component_a.contrast_probe <level> <payload> [--distilled]
+    python -m component_a.contrast_probe <level> <payload> [--distilled]
     # e.g.  L1_natural_word i_hate_you
 """
 

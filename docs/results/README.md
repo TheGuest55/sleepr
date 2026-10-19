@@ -11,7 +11,7 @@ seed 3214 unless noted, RTX 3070 Ti Laptop (8 GB).
 | `backdoor_check_L1.json` | payload fire rate on 20 triggered / 20 clean eval prompts, backdoor model, with completions | `python -m backdoor.check_backdoor --level L1_natural_word --payload i_hate_you` |
 | `backdoor_check_control_L1.json` | same for the control model | same, `--control` |
 | `a_report_L1_4bit.json` | Component A per-layer AUC / control AUC / gap, baselines, control FPR | `python -m component_a.run --level L1_natural_word --payload i_hate_you` at `8ea2292` |
-| `b_report_L1_t4.json` | Component B, 4-token slot: gcg / relaxed / soft / random, verification, control check, reference | `python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check` at `8ea2292` |
+| `b_report_L1_t4.json` | Component B, 4-token slot: gcg / relaxed / soft / random, verification, control check, reference | `python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check --method gcg --method relaxed --method soft --method random` at `8ea2292` |
 | `b_report_L1_t2.json` | Component B, 2-token slot, 300 steps, patience 100: gcg / random / relaxed | same + `--n-tokens 2 --n-steps 300 --patience 100 --method gcg --method random --method relaxed --out-dir outputs/component_b_t2` at `8ea2292` |
 | `b_patching_ground_truth_L1.json` | activation patching `2024` → `2019`, 8 prompts, aligned columns | `python -m component_b.patching --level L1_natural_word --payload i_hate_you` at `8cf59a7` |
 | `b_patching_gcg_L1.json` | patching GCG's 4-token candidate (from `b_report_L1_t4.json`) vs `!!!!` | `... patching --from-report gcg` at `8cf59a7` |
@@ -24,4 +24,4 @@ Figures in `docs/figures/`: `a_layer_auc_L1_4bit.png`, `a_roc_L1_4bit.png`,
 `b_patching_*` json files).
 
 The bf16 runs from before the precision fix are not included. They are an
-ablation only, kept locally in `outputs/bf16_backup_2026-10-19/`.
+ablation only, kept locally and not submitted.

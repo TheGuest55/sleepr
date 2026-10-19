@@ -13,7 +13,7 @@ not a defection representation. This is a B-reproducible readout, so it is the
 one that matters for Component B. See FINDINGS.md.
 
 Run:
-    PYTHONPATH=. python -m component_a.experiments.pregen_probe <level> <payload> [--distilled]
+    python -m component_a.experiments.pregen_probe <level> <payload> [--distilled]
     # e.g.  L3_semantic i_hate_you --distilled
 
 Reuses component_a's model loader + prompt builder. Does NOT modify conventions.py.

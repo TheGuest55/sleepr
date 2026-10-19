@@ -1,7 +1,7 @@
 """Build the Coursework 1 "Source Code & Binaries" zip from a git ref.
 
     python scripts/package_submission.py                     # source only, from main
-    python scripts/package_submission.py --ref feat/component-b
+    python scripts/package_submission.py --ref HEAD          # another ref
     python scripts/package_submission.py --with-adapters     # + trained L1 adapters
 
 The source part is exactly ``git archive <ref>``: tracked files only, so no

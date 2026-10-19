@@ -19,7 +19,7 @@ Component B will climb) and reads activations at that layer under the recorded
 readout mode. GPU is used only for the forward passes.
 
 Run:
-    PYTHONPATH=. python -m component_a.experiments.disentangle <level> <payload> [--distilled]
+    python -m component_a.experiments.disentangle <level> <payload> [--distilled]
 """
 
 from __future__ import annotations

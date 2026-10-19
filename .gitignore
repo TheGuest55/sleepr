@@ -50,7 +50,3 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
-
-# Local-only notes (not tracked)
-CLAUDE.md
-HANDOVER.md
