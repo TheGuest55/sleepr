@@ -74,7 +74,7 @@ control models for `i_hate_you-L1_natural_word-cot`,
 
 Plots in `outputs/component_a/<slug>/` and `outputs/component_a/pregen_<slug>.png`.
 
-## The core problem (this is the real deliverable of this branch)
+## The core problem (pre-rebuild analysis)
 
 Component A must hand Component B a direction that B can **climb using only the
 input** (B searches over input embeddings and does **not** know the payload), and

@@ -4,7 +4,8 @@ Copied from `outputs/` and `checkpoints/` (both git-ignored) so the numbers in
 `component_a/FINDINGS.md` and `component_b/FINDINGS.md` can be checked from the
 repo. All runs: 2026-10-19/20, `unsloth/Llama-3.2-1B-Instruct` + QLoRA adapters,
 date-free chat template, models loaded in NF4 4-bit (default since `8ea2292`),
-seed 3214 unless noted, RTX 3070 Ti Laptop (8 GB).
+seed 3214 unless noted, RTX 3070 Ti Laptop (8 GB). Commit ids refer to the
+project's git history (github.com/TheGuest55/sleepr).
 
 | file | what | produced by |
 |---|---|---|

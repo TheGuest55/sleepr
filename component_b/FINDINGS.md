@@ -74,8 +74,9 @@ answer key would see.
 
 **Efficiency vs random (proposal §3.3), 4-token slot:** with the same scorer,
 GCG reached a 54 % trigger in 37 % of random's forward budget, where random
-reached 17 %. The 2-token run below reverses this. GCG's best was found by about step 15 of 55; the search then sat at a
-local optimum until patience (40) stopped it.
+reached 17 %. The 2-token run below reverses this. GCG's best was found by
+about step 15 of 55; the search then sat at a local optimum until patience
+(40) stopped it.
 
 ## Results — 2-token slot (the year is 2 tokens: `202` + `4`), 300 steps, patience 100
 
@@ -102,7 +103,10 @@ objective, which is the main reason gradient guidance helps less than hoped.
 `python -m component_b.sweep --slots 2` (`docs/results/b_sweep_L1.*`). Every
 method was capped at the same number of sequence forwards (~25k; a
 forward+backward counts as one). GCG restarted from random tokens after 12
-steps without improvement. The 4-token half of the sweep was not run.
+steps without improvement. The 4-token half of the sweep was not run: the
+sweep was stopped after the 2-token half, and its 9 finished runs were
+finalised from the log with `--from-log` (re-verification, null and control;
+every logged fire rate reproduced).
 
 | seed | gcg | random | relaxed→gcg |
 |---|---|---|---|
