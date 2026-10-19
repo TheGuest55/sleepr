@@ -30,7 +30,7 @@ behaviourally and scored against ground truth.
 |---|---|
 | `gcg` | HotFlip/GCG coordinate ascent (Zou et al. 2023): rank token swaps by embedding gradient, evaluate a random sample of the top-k across all positions, keep the best. |
 | `relaxed` | DBS/PICCOLO softmax relaxation over the vocab, temperature-annealed, discretised at the end. **This is the method the proposal names (§3.1).** |
-| `soft` | Neural Cleanse adapted to text: optimise continuous embeddings, snap to nearest vocab row. |
+| `soft` | Neural Cleanse adapted to text: optimise continuous embeddings, snap each to the vocab row with the largest dot product. |
 | `random` | Gradient-free random coordinate search at a comparable forward budget (baseline). |
 | `relaxed_gcg` | Hybrid: a short relaxation picks the starting tokens, then GCG refines them in the discrete space. |
 

@@ -9,7 +9,8 @@ the discrete input-token space. Four methods (proposal 3.3):
 * ``relaxed`` - DBS / PICCOLO-style softmax relaxation over the vocab, annealed
                 from smooth to near-argmax, discretised at the end.
 * ``soft``    - Neural Cleanse adapted to text: optimise continuous trigger
-                embeddings, then snap each to the nearest vocab row.
+                embeddings, then snap each to the vocab row with the largest
+                dot product (not cosine: favours large-norm rows).
 * ``random``  - gradient-free random coordinate search (baseline at a
                 comparable forward budget).
 
@@ -311,7 +312,9 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
     history = [best]
     n_forwards += len(obj.tails)
     patience = 0
+    run_best = best                 # best of the CURRENT restart (drives patience)
     restarts_left = max(1, scfg.n_restarts) - 1
+    eps = 1e-3                      # batched bf16/4-bit scores jitter at ~1e-4
     for _ in range(scfg.n_steps):
         if not _within_budget(scfg, n_forwards):
             break
@@ -337,9 +340,11 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
         n_forwards += len(unique) * len(obj.tails)
         i = int(np.argmax(scores))
         trigger = list(unique[i])
-        if scores[i] > best:
+        if scores[i] > best + eps:
             best = float(scores[i])
             best_ids = list(unique[i])
+        if scores[i] > run_best + eps:
+            run_best = float(scores[i])
             patience = 0
         else:
             patience += 1
@@ -350,6 +355,8 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
             restarts_left -= 1
             patience = 0
             trigger = _random_ids(rng, allowed, obj.n_tokens)
+            run_best = float(obj.logit(trigger))
+            n_forwards += len(obj.tails)
     return SearchResult("gcg", best_ids, best, history, n_forwards)
 
 
@@ -440,6 +447,8 @@ def search_relaxed_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.T
 
     rel = search_relaxed(obj, replace(scfg, relax_steps=scfg.relax_gcg_steps),
                          allowed, init_ids, rng)
+    # Without a forward cap GCG would get its full n_steps ON TOP of the
+    # relaxation; for budget comparisons always set max_forwards.
     res = search_gcg(obj, scfg, allowed, rel.trigger_ids, rng, n_forwards=rel.n_forwards)
     return SearchResult("relaxed_gcg", res.trigger_ids, res.best_logit,
                         rel.history + res.history, res.n_forwards)

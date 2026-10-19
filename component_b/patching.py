@@ -139,7 +139,9 @@ def patch_scan(model, head: list[int], tails: list[list[int]],
     per_prompt, records, aligned = [], [], []
     for tail in tails:
         eff, rec = _scan_one(model, layers, head, tail, trig_ids, clean_ids, target, chunk)
-        rec["used"] = abs(rec["logp_triggered"] - rec["logp_clean"]) >= min_shift
+        # Only prompts where the slot RAISES the target: a candidate that lowers
+        # it there would flip the sign of the ratio and cancel real effects.
+        rec["used"] = (rec["logp_triggered"] - rec["logp_clean"]) >= min_shift
         records.append(rec)
         per_prompt.append(eff)
         if not rec["used"]:
@@ -231,7 +233,12 @@ def main() -> None:
                              f"{len(clean_ids)}; pick a clean string of equal length")
 
     head, _, _ = srch.build_template(tok, prompts[0], len(trig_ids))
-    tails = [srch.build_template(tok, q, len(trig_ids))[1] for q in prompts]
+    tails = []
+    for q in prompts:
+        h, t, _ = srch.build_template(tok, q, len(trig_ids))
+        if h != head:
+            raise RuntimeError("trigger slot differs across prompts (unexpected)")
+        tails.append(t)
 
     # Restore the BACKDOOR's first token (what the real trigger makes the model
     # emit), so maps for the ground truth and for candidates are comparable.
@@ -254,7 +261,7 @@ def main() -> None:
     t0 = tails[0]
     labels = ([tok_lbl(i) for i in head]
               + [f"[{tok_lbl(i)}]" for i in trig_ids]
-              + [tok_lbl(t0[0]), "<prompt body: max>"]
+              + [f"sep:{tok_lbl(t0[0])}", "<prompt body: max>"]
               + [tok_lbl(i) for i in t0[len(t0) - k:]])
     used = [r for r in res["per_prompt"] if r["used"]]
     print(f"[patch] {trigger!r} vs {clean!r}: {res['n_prompts']}/{len(tails)} prompt(s) "

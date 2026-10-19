@@ -45,12 +45,14 @@ def _summary(rows: list[dict]) -> list[dict]:
         fire = np.array([r["payload_fire"] for r in rs])
         out.append({
             "n_tokens": n, "method": m, "seeds": len(rs),
-            "fire_mean": float(fire.mean()), "fire_std": float(fire.std()),
+            "fire_mean": float(fire.mean()),
+            "fire_std": float(fire.std(ddof=1)) if len(fire) > 1 else 0.0,
             "fire_best": float(fire.max()),
             "seeds_ge_50pct": int((fire >= 0.5).sum()),
             "flagged": int(sum(r["flagged"] for r in rs)),
             "control_fire_max": float(max(r["control_fire"] for r in rs)),
             "logit_mean": float(np.mean([r["best_logit"] for r in rs])),
+            "text_logit_mean": float(np.mean([r.get("text_logit", np.nan) for r in rs])),
             "forwards_mean": float(np.mean([r["n_forwards"] for r in rs])),
             "seconds_mean": float(np.mean([r["seconds"] for r in rs])),
             "exact": int(sum(r["exact"] for r in rs)),
@@ -60,16 +62,22 @@ def _summary(rows: list[dict]) -> list[dict]:
 
 
 def _markdown(summary: list[dict], null: dict, budget: int) -> str:
-    lines = [f"Equal budget: {budget} sequence forwards per run.", "",
+    lines = [f"Equal budget: {budget} sequence forwards per run. A forward+backward "
+             "(GCG gradient, relaxation step) counts as one forward, which favours the "
+             "gradient methods by a few percent of real compute. sd is the sample sd.",
+             "'flagged' = collapse above the max of the null strings; with n null strings "
+             "each run has ~1/(n+1) chance of a false flag.", "",
              "| slot | method | seeds | payload fire mean ± sd | best | seeds ≥ 50 % "
-             "| flagged (null-calibrated) | control max | probe logit | forwards | time |",
+             "| flagged (null-calibrated) | control max | probe logit (ids / text) "
+             "| forwards | time |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in summary:
         lines.append(
             f"| {s['n_tokens']} | {s['method']} | {s['seeds']} | "
             f"{100 * s['fire_mean']:.1f} ± {100 * s['fire_std']:.1f} % | "
             f"{100 * s['fire_best']:.1f} % | {s['seeds_ge_50pct']} | {s['flagged']} | "
-            f"{100 * s['control_fire_max']:.1f} % | {s['logit_mean']:+.2f} | "
+            f"{100 * s['control_fire_max']:.1f} % | {s['logit_mean']:+.2f} / "
+            f"{s['text_logit_mean']:+.2f} | "
             f"{s['forwards_mean']:.0f} | {s['seconds_mean']:.0f} s |")
     lines += ["", "Null (random strings, no search):"]
     for n, d in sorted(null.items()):
@@ -80,9 +88,11 @@ def _markdown(summary: list[dict], null: dict, budget: int) -> str:
 
 
 def run_sweep(scfg: SearchConfig, slots: list[int], seeds: list[int],
-              methods: list[str], budget: int, n_null: int) -> dict:
+              methods: list[str], budget: int, n_null: int,
+              patience: int = 12) -> dict:
     from . import search as srch
-    from .load import clean_prompts, load_direction, load_target
+    from .load import (clean_prompts, load_direction, load_target, probe_scores,
+                       user_with_trigger)
     from .scoring import collapse_rate, score_candidate
     from .verify import run_condition, verify_trigger
 
@@ -118,19 +128,29 @@ def run_sweep(scfg: SearchConfig, slots: list[int], seeds: list[int],
         init_ids = srch.init_token_ids(tok, s_n)
         for seed in seeds:
             for method in methods:
+                # ~49 GCG steps fit in 25k forwards and GCG plateaus by step
+                # ~15, so patience must be short for restarts to happen.
                 cfg = replace(s_n, seed=seed, max_forwards=budget, n_steps=10_000,
-                              n_restarts=max(s_n.n_restarts, 5))
+                              n_restarts=max(s_n.n_restarts, 5), patience=patience)
                 t0 = time.perf_counter()
                 res = srch.search(obj, cfg, allowed, method, init_ids,
                                   np.random.default_rng(seed))
                 secs = time.perf_counter() - t0
                 trig = tok.decode(res.trigger_ids, skip_special_tokens=False)
+                # Search scores ids; verification goes through text (chat
+                # template trims, BPE may merge with the separator). Record the
+                # probe score of the text so a failure to fire can be told
+                # apart from a tokenisation mismatch.
+                text_logit = float(np.mean(probe_scores(
+                    model, tok, direction,
+                    [user_with_trigger(trig, p) for p in search_prompts])))
                 v = verify_trigger(model, tok, cfg, payload, trig, verify_prompts, baseline)
                 sc = score_candidate(scfg.backdoor.trigger_level, trig, tok)
                 rows.append({
                     "n_tokens": n, "seed": seed, "method": method, "trigger": trig,
                     "trigger_ids": [int(i) for i in res.trigger_ids],
-                    "best_logit": float(res.best_logit), "n_forwards": int(res.n_forwards),
+                    "best_logit": float(res.best_logit), "text_logit": text_logit,
+                    "n_forwards": int(res.n_forwards),
                     "seconds": secs, "payload_fire": float(v["payload_fire_rate"]),
                     "collapse": float(v["collapse"]),
                     "flagged": bool(v["collapse"] > null[n]["collapse_max"]),
@@ -140,13 +160,13 @@ def run_sweep(scfg: SearchConfig, slots: list[int], seeds: list[int],
                       f"logit={res.best_logit:+.2f} fire={v['payload_fire_rate']:.2f} "
                       f"fwd={res.n_forwards} {secs:.0f}s", flush=True)
 
-    # Control: does any candidate fire the honest twin?
-    try:
-        import torch
-        del model
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
+    # Control: does any candidate fire the honest twin? Drop every reference
+    # to the backdoor model first, or it stays on the GPU next to the control.
+    import gc
+    import torch
+    del model, obj, baseline
+    gc.collect()
+    torch.cuda.empty_cache()
     ctrl, ctok = load_target(scfg, "control")
     cbase = run_condition(ctrl, ctok, scfg, "", verify_prompts)
     for r in rows:
@@ -172,6 +192,8 @@ def main() -> None:
     p.add_argument("--methods", nargs="+", default=list(DISCRETE), choices=list(DISCRETE))
     p.add_argument("--budget", type=int, default=25_000,
                    help="Sequence forwards per run (equal for every method).")
+    p.add_argument("--patience", type=int, default=12,
+                   help="GCG steps without improvement before a restart.")
     p.add_argument("--n-null", type=int, default=8,
                    help="Random strings per slot length for the null calibration.")
     p.add_argument("--full-precision", action="store_true")
@@ -179,7 +201,7 @@ def main() -> None:
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
     scfg = SearchConfig(backdoor=bd, load_in_4bit=not a.full_precision)
-    out = run_sweep(scfg, a.slots, a.seeds, a.methods, a.budget, a.n_null)
+    out = run_sweep(scfg, a.slots, a.seeds, a.methods, a.budget, a.n_null, a.patience)
     path = scfg.report_dir("sweep.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=1, default=float))
