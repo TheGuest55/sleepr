@@ -1,0 +1,470 @@
+"""Component B core: gradient-guided discrete trigger search.
+
+Consumes Component A's exported defection direction and climbs it by searching
+the discrete input-token space. Four methods (proposal 3.3):
+
+* ``gcg``     - HotFlip / GCG-style coordinate ascent: rank token substitutions
+                by the embedding gradient, evaluate the best few for real, move
+                to the best, repeat.
+* ``relaxed`` - DBS / PICCOLO-style softmax relaxation over the vocab, annealed
+                from smooth to near-argmax, discretised at the end.
+* ``soft``    - Neural Cleanse adapted to text: optimise continuous trigger
+                embeddings, then snap each to the vocab row with the largest
+                dot product (not cosine: favours large-norm rows).
+* ``random``  - gradient-free random coordinate search (baseline at a
+                comparable forward budget).
+
+The readout (layer + last-prompt-token position) is read from the ``Direction``
+handoff, so the objective provably equals the signal Component A learned. The
+search only ever moves the trigger's input-embedding rows; model weights are
+never updated and gradients never flow through 4-bit quantised weights.
+
+This module imports ``torch`` at the top; it is only imported at runtime (by
+``component_b.run``) on a machine with a GPU, never by the CPU unit tests.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+
+from backdoor.build_dataset import SYSTEM_PROMPT
+from .config import SearchConfig
+from .load import Direction
+
+
+# ---------------------------------------------------------------------------
+# Prompt template (token-identical to Component A's readout)
+# ---------------------------------------------------------------------------
+
+def _probe_token(tok) -> tuple[int, str]:
+    """Pick a single, atomic token used only to locate the trigger slot.
+
+    Reserved special tokens are ideal: one id each, never merged by BPE, and
+    absent from benign prompts. Returns ``(id, token_string)``.
+    """
+    for i in range(250):
+        s = f"<|reserved_special_token_{i}|>"
+        tid = tok.convert_tokens_to_ids(s)
+        if tid is not None and tid != tok.unk_token_id:
+            return int(tid), s
+    raise RuntimeError("tokenizer has no reserved special token to probe the template")
+
+
+def check_date_free_template(tok) -> None:
+    """Refuse a tokenizer whose chat template injects text we did not pass.
+
+    The stock Llama 3 template adds ``Today Date: <now>`` to every prompt. The
+    L1-L3 trigger *is* a deployment year, so under that template every "clean"
+    search prompt already carries a trigger (today's year) and the search
+    climbs nothing. See ``backdoor/chat.py``.
+    """
+    from backdoor.chat import prompt_messages
+
+    text = tok.apply_chat_template(prompt_messages("sys", "usr"), tokenize=False,
+                                   add_generation_prompt=True)
+    if "Today Date" in text or "Cutting Knowledge" in text or re.search(r"(19|20)\d\d", text):
+        raise RuntimeError(
+            "tokenizer chat template injects a date into the prompt; the year is "
+            "the trigger, so every search prompt would be triggered. Load a "
+            "checkpoint saved with backdoor.chat.DATE_FREE_CHAT_TEMPLATE.\n"
+            f"rendered: {text!r}"
+        )
+
+
+def build_template(tok, prompt_body: str, n_tokens: int) -> tuple[list[int], list[int], list[int]]:
+    """Return ``(head, tail, positions)`` such that
+    ``head + trigger_ids + tail`` reproduces
+    ``encode_prompt(SYSTEM_PROMPT, trigger + "\n\n" + prompt_body)`` with the
+    trigger token ids inserted verbatim.
+
+    Built through the tokenizer's *actual* chat template (via ``encode_prompt``),
+    so it stays token-identical to Component A and ``verify.py`` regardless of
+    whether a checkpoint was saved under the date-free template or the stock one.
+    """
+    from backdoor.chat import encode_prompt
+
+    check_date_free_template(tok)
+    probe_id, probe_str = _probe_token(tok)
+    probe_text = probe_str * n_tokens          # no separators -> n contiguous tokens
+    full = encode_prompt(tok, SYSTEM_PROMPT, f"{probe_text}\n\n{prompt_body}")
+    hits = [i for i, t in enumerate(full) if t == probe_id]
+    if not hits or hits != list(range(hits[0], hits[0] + n_tokens)):
+        raise RuntimeError(
+            f"probe tokens not contiguous in rendered prompt (found {len(hits)})"
+        )
+    start = hits[0]
+    return full[:start], full[start + n_tokens:], list(range(start, start + n_tokens))
+
+
+def init_token_ids(tok, scfg: SearchConfig) -> list[int]:
+    ids = tok(scfg.init_token, add_special_tokens=False)["input_ids"]
+    if len(ids) != 1:
+        raise ValueError(
+            f"init_token {scfg.init_token!r} must be exactly one token, got {ids}"
+        )
+    return ids * scfg.n_tokens
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary policy
+# ---------------------------------------------------------------------------
+
+def _ascii_ok(token_str: str) -> bool:
+    if token_str.startswith("<0x"):        # raw-byte fallback token
+        return False
+    return all(ord(c) < 128 for c in token_str)
+
+
+def allowed_mask(tok, scfg: SearchConfig) -> torch.Tensor:
+    """Bool mask over the vocab of tokens the search may propose.
+
+    Structural template tokens (BOS/EOS/pad/header/EOT) are always excluded;
+    reserved special tokens are allowed by default (so an L0 special-token
+    trigger is recoverable) and ``ascii_only`` keeps the recovered string
+    readable.
+    """
+    V = len(tok)
+    mask = torch.ones(V, dtype=torch.bool)
+    structural: list[int] = []
+    for attr in ("bos_token_id", "eos_token_id", "pad_token_id"):
+        t = getattr(tok, attr, None)
+        if t is not None:
+            structural.append(t)
+    for s in ("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
+              "<|begin_of_text|>", "<|finetune_right_pad_id|>"):
+        t = tok.convert_tokens_to_ids(s)
+        if t is not None and t != tok.unk_token_id:
+            structural.append(t)
+    for t in structural:
+        mask[t] = False
+    if (not scfg.allow_reserved) or scfg.ascii_only:
+        for s, t in tok.get_vocab().items():
+            if (not scfg.allow_reserved) and s.startswith("<|reserved_"):
+                mask[t] = False
+            # Judge the *decoded* text: raw byte-level BPE keys spell spaces and
+            # newlines as Ġ/Ċ (non-ASCII), which would wrongly drop " word".
+            if scfg.ascii_only and not _ascii_ok(tok.decode([t])):
+                mask[t] = False
+    return mask
+
+
+# ---------------------------------------------------------------------------
+# The objective: mean probe logit over the search prompts
+# ---------------------------------------------------------------------------
+
+def _get_embeddings(model):
+    if hasattr(model, "get_input_embeddings"):
+        return model.get_input_embeddings()
+    return model.base_model.get_input_embeddings()
+
+
+class ProbeObjective:
+    """The A->B objective: mean probe logit over the search prompts.
+
+    A higher logit means "further along the defection direction". The search
+    maximises it; internally the gradient methods minimise ``-logit``.
+    """
+
+    def __init__(self, model, direction: Direction, head: list[int],
+                 tails: list[list[int]], positions: list[int], chunk: int = 16):
+        # Only trigger embeddings / relaxation params are optimised; keep
+        # backward from accumulating .grad on every model weight.
+        model.requires_grad_(False)
+        self.model = model
+        self.layer = direction.layer
+        self.emb = _get_embeddings(model)
+        self.device = self.emb.weight.device
+        self.w = torch.as_tensor(direction.w_raw, dtype=torch.float32,
+                                 device=self.device)
+        self.b = float(direction.b_raw)
+        self.head = head
+        self.tails = tails
+        self.positions = positions
+        self.n_tokens = len(positions)
+        self.chunk = chunk
+
+    def _logits(self, ids: torch.Tensor) -> torch.Tensor:
+        """Probe logit for a batch of prompt tensors ``(B, L)``."""
+        out = self.model(input_ids=ids, output_hidden_states=True)
+        a = out.hidden_states[self.layer + 1][:, -1, :].float()   # (B, H)
+        return a @ self.w + self.b                                # (B,)
+
+    def logit(self, trigger_ids: list[int]) -> float:
+        """Mean probe logit over the search prompts (no grad)."""
+        tot = 0.0
+        with torch.no_grad():
+            for tail in self.tails:
+                ids = torch.tensor([self.head + list(trigger_ids) + tail],
+                                   device=self.device)
+                tot += float(self._logits(ids)[0])
+        return tot / len(self.tails)
+
+    def logits(self, candidates: list[list[int]], chunk: int | None = None) -> np.ndarray:
+        """Mean probe logit over the search prompts for each candidate.
+
+        ``chunk`` bounds peak memory: each forward also materialises the LM-head
+        logits, ``(chunk, L, vocab)`` (~2 GB in bf16 at chunk=128 on Llama 3).
+        """
+        chunk = chunk or self.chunk
+        B = len(candidates)
+        sums = torch.zeros(B, device=self.device)
+        with torch.no_grad():
+            for tail in self.tails:
+                for i in range(0, B, chunk):
+                    rows = [self.head + list(c) + tail for c in candidates[i:i + chunk]]
+                    ids = torch.tensor(rows, device=self.device)
+                    sums[i:i + chunk] += self._logits(ids)
+        return (sums / len(self.tails)).float().cpu().numpy()
+
+    def grad(self, trigger_ids: list[int]) -> torch.Tensor:
+        """Gradient of ``-mean logit`` w.r.t. the trigger embeddings, ``(n_tokens, H)``.
+
+        Computed per prompt (they have different lengths) and averaged.
+        """
+        grads = []
+        for tail in self.tails:
+            ids = torch.tensor([self.head + list(trigger_ids) + tail],
+                               device=self.device)
+            emb = self.emb(ids).detach().requires_grad_(True)
+            out = self.model(inputs_embeds=emb, output_hidden_states=True)
+            a = out.hidden_states[self.layer + 1][0, -1].float()
+            loss = -(a @ self.w + self.b)
+            loss.backward()
+            grads.append(emb.grad[0, self.positions, :].detach())
+        return torch.stack(grads).mean(0)                    # (n_tokens, H)
+
+    def logit_continuous(self, z: torch.Tensor) -> torch.Tensor:
+        """Mean probe logit when the trigger slots hold the continuous embeddings ``z``.
+
+        Returns a scalar tensor that retains the autograd graph to ``z`` (used by
+        the ``relaxed``/``soft`` baselines, which backprop through it).
+        """
+        device = self.device
+        head_emb = self.emb(torch.tensor([self.head], device=device))   # (1, Hh, H)
+        z3 = z.to(head_emb.dtype).unsqueeze(0)                          # (1, n_tokens, H)
+        vals = []
+        for tail in self.tails:
+            tail_emb = self.emb(torch.tensor([tail], device=device))    # (1, Ht, H)
+            emb = torch.cat([head_emb, z3, tail_emb], dim=1)
+            out = self.model(inputs_embeds=emb, output_hidden_states=True)
+            a = out.hidden_states[self.layer + 1][0, -1].float()
+            vals.append(a @ self.w + self.b)
+        return torch.stack(vals).mean()
+
+    def propose(self, trigger_ids: list[int], grad: torch.Tensor,
+                allowed: torch.Tensor, top_k: int) -> list[list[int]]:
+        """First-order token candidates: for each position, the ``top_k`` tokens
+        whose embedding most decreases the loss (``grad . e_token``)."""
+        E = self.emb.weight.detach()                          # (V, H)
+        allowed = allowed.to(E.device)
+        s = E @ grad.T                                        # (V, n_tokens)
+        s = s.masked_fill(~allowed[:, None], float("inf"))
+        k = min(top_k, s.shape[0])
+        top_idx = s.topk(k, dim=0, largest=False).indices     # (k, n_tokens)
+        out = []
+        for pos in range(self.n_tokens):
+            for j in range(k):
+                c = list(trigger_ids)
+                c[pos] = int(top_idx[j, pos].item())
+                out.append(c)
+        return out
+
+
+@dataclass
+class SearchResult:
+    method: str
+    trigger_ids: list[int]
+    best_logit: float
+    history: list[float]      # best logit after each step
+    n_forwards: int           # approximate forward-count (budget accounting)
+
+
+# ---------------------------------------------------------------------------
+# Search methods
+# ---------------------------------------------------------------------------
+
+def _within_budget(scfg: SearchConfig, n_forwards: int) -> bool:
+    return scfg.max_forwards is None or n_forwards < scfg.max_forwards
+
+
+def _random_ids(rng, allowed: torch.Tensor, n: int) -> list[int]:
+    vocab = allowed.cpu().nonzero().squeeze(-1).numpy()
+    return [int(t) for t in rng.choice(vocab, size=n)]
+
+
+def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+               init_ids: list[int], rng=None, n_forwards: int = 0) -> SearchResult:
+    """GCG with patience-triggered restarts.
+
+    ``n_steps`` and ``max_forwards`` bound the WHOLE run (all restarts), so a
+    restarted GCG spends the same budget as an unrestarted one. When the best
+    logit hasn't improved for ``patience`` steps, the search restarts from a
+    random allowed sequence (up to ``n_restarts - 1`` times), else stops.
+    """
+    rng = rng if rng is not None else np.random.default_rng(scfg.seed)
+    trigger = list(init_ids)
+    best = obj.logit(trigger)
+    best_ids = list(trigger)
+    history = [best]
+    n_forwards += len(obj.tails)
+    patience = 0
+    run_best = best                 # best of the CURRENT restart (drives patience)
+    restarts_left = max(1, scfg.n_restarts) - 1
+    eps = 1e-3                      # batched bf16/4-bit scores jitter at ~1e-4
+    for _ in range(scfg.n_steps):
+        if not _within_budget(scfg, n_forwards):
+            break
+        grad = obj.grad(trigger)
+        n_forwards += len(obj.tails)
+        cands = obj.propose(trigger, grad, allowed, scfg.top_k)
+        # GCG (Zou et al. 2023): evaluate a random sample of the top-k swaps
+        # across ALL positions. A deterministic prefix of propose()'s
+        # position-major list only ever tries position 0, and any fixed
+        # ordering re-evaluates the same set once at a local optimum. Always
+        # keep the current trigger (stay put).
+        order = rng.permutation(len(cands))
+        seen: set[tuple[int, ...]] = {tuple(trigger)}
+        unique = [list(trigger)]
+        for i in order:
+            if len(unique) >= max(1, scfg.n_candidates):
+                break
+            key = tuple(cands[i])
+            if key not in seen:
+                seen.add(key)
+                unique.append(cands[i])
+        scores = obj.logits(unique)
+        n_forwards += len(unique) * len(obj.tails)
+        i = int(np.argmax(scores))
+        trigger = list(unique[i])
+        if scores[i] > best + eps:
+            best = float(scores[i])
+            best_ids = list(unique[i])
+        if scores[i] > run_best + eps:
+            run_best = float(scores[i])
+            patience = 0
+        else:
+            patience += 1
+        history.append(best)
+        if patience >= scfg.patience:
+            if restarts_left <= 0:
+                break
+            restarts_left -= 1
+            patience = 0
+            trigger = _random_ids(rng, allowed, obj.n_tokens)
+            run_best = float(obj.logit(trigger))
+            n_forwards += len(obj.tails)
+    return SearchResult("gcg", best_ids, best, history, n_forwards)
+
+
+def search_relaxed(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+                   init_ids: list[int], rng=None) -> SearchResult:
+    V = obj.emb.weight.shape[0]
+    E = obj.emb.weight.detach().float()     # optimise in fp32; model dtype at the call
+    allowed = allowed.to(E.device)
+    logits = torch.full((obj.n_tokens, V), -6.0, device=E.device)
+    for p, tid in enumerate(init_ids):
+        logits[p, tid] = 6.0
+    logits = logits.detach().requires_grad_(True)
+    opt = torch.optim.Adam([logits], lr=scfg.relax_lr)
+    steps = max(1, scfg.relax_steps)
+    history = []
+    for step in range(steps):
+        t = step / max(1, steps - 1)
+        tau = scfg.tau_start + (scfg.tau_end - scfg.tau_start) * t
+        masked = logits.masked_fill(~allowed[None, :], -1e9)
+        probs = torch.softmax(masked / tau, dim=-1)
+        z = (probs @ E).to(obj.emb.weight.dtype)
+        loss = -obj.logit_continuous(z)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        history.append(-float(loss.detach()))
+    with torch.no_grad():
+        final = logits.masked_fill(~allowed[None, :], -1e9)
+        ids = final.argmax(-1).tolist()
+    return SearchResult("relaxed", ids, obj.logit(ids), history,
+                        steps * len(obj.tails))
+
+
+def search_soft(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+                init_ids: list[int], rng=None) -> SearchResult:
+    E = obj.emb.weight.detach().float()     # optimise in fp32; model dtype at the call
+    allowed = allowed.to(E.device)
+    z = E[torch.tensor(init_ids, device=E.device)].clone().detach().requires_grad_(True)
+    opt = torch.optim.Adam([z], lr=scfg.soft_lr)
+    history = []
+    for _ in range(max(1, scfg.relax_steps)):
+        loss = -obj.logit_continuous(z.to(obj.emb.weight.dtype))
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        history.append(-float(loss.detach()))
+    sim = z.detach() @ E.T                               # (n_tokens, V)
+    sim = sim.masked_fill(~allowed[None, :], float("-inf"))
+    ids = sim.argmax(-1).tolist()
+    return SearchResult("soft", ids, obj.logit(ids), history,
+                        scfg.relax_steps * len(obj.tails))
+
+
+def search_random(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+                  init_ids: list[int], rng=None) -> SearchResult:
+    rng = rng if rng is not None else np.random.default_rng(scfg.seed)
+    vocab = allowed.cpu().nonzero().squeeze(-1).tolist()
+    trigger = list(init_ids)
+    best = obj.logit(trigger)
+    best_ids = list(trigger)
+    history = [best]
+    n_forwards = len(obj.tails)
+    for _ in range(scfg.n_steps):
+        if not _within_budget(scfg, n_forwards):
+            break
+        cands = []
+        for _ in range(scfg.n_candidates):
+            c = list(trigger)
+            c[int(rng.integers(obj.n_tokens))] = int(rng.choice(vocab))
+            cands.append(c)
+        scores = obj.logits(cands)
+        n_forwards += len(cands) * len(obj.tails)
+        i = int(np.argmax(scores))
+        trigger = list(cands[i])
+        if scores[i] > best:
+            best = float(scores[i])
+            best_ids = list(cands[i])
+        history.append(best)
+    return SearchResult("random", best_ids, best, history, n_forwards)
+
+
+def search_relaxed_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+                       init_ids: list[int], rng=None) -> SearchResult:
+    """Relaxation as an initialiser: a short DBS/PICCOLO-style anneal picks a
+    starting sequence, then GCG refines it in the discrete space (where the
+    relaxation's mixtures can't fool the objective) with the remaining budget."""
+    from dataclasses import replace
+
+    rel = search_relaxed(obj, replace(scfg, relax_steps=scfg.relax_gcg_steps),
+                         allowed, init_ids, rng)
+    # Without a forward cap GCG would get its full n_steps ON TOP of the
+    # relaxation; for budget comparisons always set max_forwards.
+    res = search_gcg(obj, scfg, allowed, rel.trigger_ids, rng, n_forwards=rel.n_forwards)
+    return SearchResult("relaxed_gcg", res.trigger_ids, res.best_logit,
+                        rel.history + res.history, res.n_forwards)
+
+
+def search(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+           method: str, init_ids: list[int], rng=None) -> SearchResult:
+    rng = rng if rng is not None else np.random.default_rng(scfg.seed)
+    if method == "gcg":
+        return search_gcg(obj, scfg, allowed, init_ids, rng)
+    if method == "relaxed":
+        return search_relaxed(obj, scfg, allowed, init_ids, rng)
+    if method == "soft":
+        return search_soft(obj, scfg, allowed, init_ids, rng)
+    if method == "random":
+        return search_random(obj, scfg, allowed, init_ids, rng)
+    if method == "relaxed_gcg":
+        return search_relaxed_gcg(obj, scfg, allowed, init_ids, rng)
+    raise ValueError(f"unknown method {method!r}")

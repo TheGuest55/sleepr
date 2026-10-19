@@ -50,7 +50,8 @@ def extract_pregen(pcfg: ProbeConfig, which: str, prompts):
             {"role": "user", "content": ex["user"]},
         ]
         text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        ids = tok(text, return_tensors="pt").input_ids.to(model.device)
+        ids = tok(text, return_tensors="pt",
+                  add_special_tokens=False).input_ids.to(model.device)
         with torch.no_grad():
             out = model(ids, output_hidden_states=True)
         pos = ids.shape[1] - 1  # last prompt token, before any generation
