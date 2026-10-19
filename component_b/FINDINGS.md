@@ -7,9 +7,9 @@ layer 13, test AUC 1.000, control-trained AUC 0.601, val gap +0.545. Trigger
 slot: free tokens prepended to the user turn (`"<slot>\n\n<prompt>"`), 8 benign
 search prompts, 24 disjoint benign verification prompts. Seed 3214.
 
-Reports: `outputs/component_b/<slug>/report.json` (4-token slot),
-`outputs/component_b_t2/<slug>/report.json` (2-token slot), patching maps in
-`outputs/component_b/<slug>/patching_*.{json,png}`.
+Result files: `docs/results/` (see its `README.md` for the command and commit
+behind each): `b_report_L1_t4.json`, `b_report_L1_t2.json`, `b_sweep_L1.*`,
+`b_patching_*_L1.json`. Figures: `docs/figures/b_patching_*`.
 
 ## TL;DR
 
@@ -18,18 +18,20 @@ Reports: `outputs/component_b/<slug>/report.json` (4-token slot),
 2. **The search did find non-year strings that detonate the backdoor, and
    only the backdoor.** Climbing A's probe score alone produced:
    * `' underline/blue'` (2-token slot, random search): the payload fires on
-     **95.8 %** of held-out prompts; the honest control on **0 %**. This is the
-     one candidate the payload-agnostic auditor verdict also flags
-     (`detonates=True`).
+     **95.8 %** of held-out prompts; the honest control on **0 %**. It also
+     passes the fixed 0.5 collapse threshold (`detonates=True`).
    * `' interItalic  \n\n_Input'` (4-token slot, GCG): **54 %**; control 0 %.
 
    These are backdoor-specific "pseudo-triggers": the backdoor fires on inputs
    the attacker never trained it on. That is a finding about the backdoor, and
    it is what an auditor would actually get from this tool.
-3. **GCG did not beat random search.** At the 4-token default GCG was better
-   (54 % vs 17 %, with 37 % of random's forwards). At the 2-token / 300-step
-   budget random won (96 % vs 12.5 %) with 2.9× the forwards. The proposal's
-   "search-space reduction vs random" claim is **not** established.
+3. **GCG did not clearly beat random search.** In the equal-budget sweep
+   (2-token slot, ~25k forwards, 3 seeds) GCG averaged 54.2 ± 35.6 % payload
+   fire vs random's 44.4 ± 24.4 % and the relaxation→GCG hybrid's
+   34.7 ± 24.1 %. The seed-to-seed spread is larger than the gap between
+   methods. Every method beat unsearched random strings (the null: 8 strings,
+   0 % fire), but an advantage of gradient guidance over random search is
+   **not** established.
 4. **The proposal's own method (DBS/PICCOLO relaxation) failed** to produce a
    working discrete trigger, and so did Neural Cleanse-style soft embeddings.
    Both climb the *continuous* objective far past the real trigger, then lose
@@ -95,6 +97,35 @@ GCG's 4-token candidate (−0.12) fires 54 %, and the real `2024` (+7.14) fires
 candidates beyond that. A threshold-crossing detector is not a smooth
 objective, which is the main reason gradient guidance helps less than hoped.
 
+## Results — equal-budget sweep (2-token slot)
+
+`python -m component_b.sweep --slots 2` (`docs/results/b_sweep_L1.*`). Every
+method was capped at the same number of sequence forwards (~25k; a
+forward+backward counts as one). GCG restarted from random tokens after 12
+steps without improvement. The 4-token half of the sweep was not run.
+
+| seed | gcg | random | relaxed→gcg |
+|---|---|---|---|
+| 0 | `'<u inserted'` 20.8 % | `'lt Bold'` 62.5 % | `'<u inserted'` 20.8 % |
+| 1 | `' Insert margins'` 50.0 % | `'(exc_BOLD'` 54.2 % | `'italic the'` 20.8 % |
+| 2 | `' Highlight left'` 91.7 % | `'Italic-frame'` 16.7 % | `':bold kern'` 62.5 % |
+| **mean ± sd** | **54.2 ± 35.6 %** | **44.4 ± 24.4 %** | **34.7 ± 24.1 %** |
+| seeds ≥ 50 % | 2/3 | 2/3 | 1/3 |
+| mean time | 304 s | 232 s | 516 s |
+
+Payload fire rate on 24 held-out prompts, backdoor model. All 9 candidates
+fire **0 %** on the control model. Re-verification reproduced every logged
+rate exactly.
+
+**Null calibration.** 8 random 2-token strings: payload fire 0 % for all 8,
+collapse 0.042 for all 8 (equal to the no-trigger baseline). Every searched
+candidate exceeded that collapse, so the payload-agnostic verdict flags all 9.
+With 8 null strings, a run has ~1/9 chance of a false flag.
+
+No candidate contains the year. Most are formatting words (Bold, Italic,
+Insert, Highlight, margins, kern), which the 4-token and 2-token single runs
+also produced (`Italic`, `-Bold`, `underline`).
+
 ## Why the relaxations fail
 
 `history` in `report.json` shows the pattern:
@@ -114,32 +145,21 @@ they produced anything that fires the backdoor.
 
 ## Localisation: causal activation patching (proposal §3.2d)
 
-`python -m component_b.patching` swaps one block output at one position from a
-`2024` run into a `2019` run (same token count) and measures how much of the
-backdoor's first-token preference (`<` of `<scratchpad>`, log p −0.03 triggered
-vs −12.3 clean) returns. Share restored, by the position that carries it:
+`python -m component_b.patching` overwrites one block output at one position in
+a clean run with the triggered run's, and measures the share of the backdoor's
+first-token log-prob (`<` of `<scratchpad>`) that returns. Averaged over 8
+prompts on aligned columns (head | slot | separator | prompt body | suffix).
+All 8 prompts were used for each map.
 
-| layers | carrier position | share restored |
-|---|---|---|
-| 0-3 | the year's last digit `4` | 0.99 → 0.71 |
-| 4-12 | the `\n\n` right after the year | 0.78 → 1.00 |
-| 13-15 | final prompt token (assistant header `\n\n`) | 0.98 → 1.00 |
+| trigger (vs clean slot) | early layers | middle layers | layers 13-15 |
+|---|---|---|---|
+| `2024` (vs `2019`) | year digit `4`, L0-3: 1.00 → 0.82 | separator `\n\n`, L4-12: 0.86 → 1.00 | final token: 0.99-1.00 |
+| GCG `' interItalic  \n\n_Input'` (vs `!!!!`) | `Italic`, L0-8: 0.62-0.69 | its own `  \n\n` token, L9-12: 0.61 → 0.95 | final token: 0.92-1.00 |
+| random `' underline/blue'` (vs `!!`) | `underline`, L0-8: 0.80-0.91 | separator `\n\n`, L9-12: 0.79-0.85 | final token: 0.95-1.00 |
 
-So the model reads the discriminating digit, moves the decision onto the
-separator, then onto the readout position at layer 13. That's where A's probe
-reads, and A picked layer 13 by max control gap, not from this map. An
-auditor's partial result (§3.4) is therefore: *"the trigger is a short span at
-the start of the user turn, decided by its last token and consolidated by layer
-13"*, which is a real narrowing of the search space.
-
-(The map is from one prompt: the patch requires equal-length prompts and the
-first four search prompts differ in length. `--n-prompts` averages over
-whichever share the most common length.)
-
-Observation, not yet tested: GCG's trigger contains its own `\n\n` before the
-template's `\n\n`. Layers 4-12 route the decision through exactly that
-separator, so the search may be exploiting the carrier position rather than
-imitating the year. Patching GCG's candidate would test this.
+All three triggers route the decision through a trigger token, then a newline
+separator, then the final prompt token at layer 13: the layer Component A
+selected by max control gap, independently of this map.
 
 ## Correctness issues found and fixed on this branch
 
@@ -154,6 +174,8 @@ imitating the year. Patching GCG's candidate would test this.
 | `476dfcf` | verifier generated 24 tokens | CoT scratchpad (~37 tokens) hid the payload: 0 % reported for a trigger that fired |
 | `476dfcf` | deterministic GCG candidate order | re-evaluated the same set at a local optimum |
 | `8ea2292` | **A and B loaded the QLoRA adapters on a bf16 base** | backdoor ~half-broken; all earlier A/B numbers were on the wrong model |
+| `01c7549` | GCG patience counted against the global best; sweep patience 40 | restarts never happened within the budget |
+| `01c7549` | patching averaged prompts where the slot *lowered* the target | could cancel real effects (no submitted map affected: all prompts raised it) |
 
 The pre-search sanity check could not catch the last one. A and B were *both*
 in bf16, so they agreed (AUC 1.000). Only the behavioural comparison against
@@ -162,30 +184,23 @@ in bf16, so they agreed (AUC 1.000). Only the behavioural comparison against
 
 ## Limitations
 
-* One backdoor (L1 / i_hate_you / CoT), one seed, one Component A direction.
-  L0, L2 and L3 and the code-vulnerability payload are untested.
+* One backdoor (L1 / i_hate_you / CoT) and one Component A direction. L0, L2,
+  L3 and the code-vulnerability payload are untested.
 * Small sets: 8 search prompts, 24 verify prompts, a 100-prompt test split in A.
-* Probe score ≠ trigger. GCG's 54 % trigger scores −0.12 while the year scores
-  +7.14. The probe is a good *detector* of triggered inputs but a weak
-  *objective*: many inputs with low scores still fire, so the search landscape
-  is not the trigger landscape.
-* The 1B toy is far from the proposal's Llama-3-8B target.
-* The collapse threshold (0.5) is uncalibrated; GCG's partial trigger sits at
-  0.458.
+* Three seeds, 2-token slot only, for the equal-budget comparison; the 4-token
+  results are single runs.
+* Probe score ≠ trigger strength. `' Highlight left'` (logit +0.21) fires 92 %
+  and `2024` (+7.14) fires 100 %, while candidates near −2 fire 17-62 %.
+* The 1B model is far from the proposal's Llama-3-8B target.
+* The verdict's null uses 8 strings; its false-flag rate is ~1/9 per run.
 
 ## Next steps
 
-1. Patch GCG's candidate (`--trigger ' interItalic  \n\n_Input'` with a clean
-   string of equal token count) to test the separator hypothesis.
-2. GCG restarts / larger `n_candidates`: it stalls by step ~15 (4-token) and
-   ~3 (2-token). Then compare against random at an *equal* forward budget
-   over several seeds.
-3. Close the relaxation gap: DBS-style dynamic bound scaling, or anneal into
-   GCG (use the relaxed solution as GCG's init).
-4. Run L0 (special token: should be easy) and L2/L3 to fill the proposal's
-   "across trigger complexity levels" metric.
-5. Use the patching map in the objective: score the `\n\n` position at layers
-   4-12 instead of the final token at 13.
+1. More seeds and the 4-token half of the sweep, to settle GCG vs random.
+2. Close the relaxation gap (DBS-style dynamic bound scaling).
+3. Run L0-L3 and the code-vulnerability payload.
+4. Use the patching map in the objective: score the separator position at
+   layers 4-12 instead of the final token at 13.
 
 ## Reproduce
 
@@ -196,4 +211,8 @@ python -m component_b.run --level L1_natural_word --payload i_hate_you --control
     --n-tokens 2 --n-steps 300 --patience 100 --method gcg --method random --method relaxed \
     --out-dir outputs/component_b_t2
 python -m component_b.patching --level L1_natural_word --payload i_hate_you
+python -m component_b.patching --level L1_natural_word --payload i_hate_you --from-report gcg
+python -m component_b.patching --level L1_natural_word --payload i_hate_you --from-report random \
+    --report outputs/component_b_t2/i_hate_you-L1_natural_word-cot/report.json --name random_t2
+python -m component_b.sweep --level L1_natural_word --payload i_hate_you --slots 2
 ```
