@@ -10,7 +10,7 @@ Three families of number, kept distinct on purpose:
   * **Disentanglement / validity** — apply the best probe to the *control* model.
     The control saw identical prompts and trigger contexts but never learned to
     defect, so if the probe fires there it is keying on the trigger token, not on
-    defection behaviour (the main threat to validity, CLAUDE.md / README note 3).
+    defection behaviour (the main threat to validity).
 
 A flat AUC ~1.0 at every layer with gap ~0 is a RED FLAG (surface leakage), not a
 pass — see ``FINDINGS.md``.

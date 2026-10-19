@@ -2,7 +2,7 @@
 
 Component A trains a **simple linear classifier** (logistic regression) on the
 target model's **residual-stream activations** to learn its internal "about to
-defect" direction. Per the project's corrected mental model (`CLAUDE.md`):
+defect" direction.
 
 > **Component A does NOT find the trigger.** It is trained on inputs we already
 > *know* are triggering vs clean (we built the backdoor). Its only job: does the
@@ -27,8 +27,7 @@ identical for A (training) and B (optimising). There are two modes:
   includes payload tokens, so it is an **upper bound** that keys on the output —
   B cannot reproduce it. Select with `--readout input_output`.
 
-Why not the obvious alternatives (`CLAUDE.md` note 3, now describing the
-ablation): input alone → a trivial trigger-keyword classifier; output alone →
+Why not the obvious alternatives: input alone → a trivial trigger-keyword classifier; output alone →
 triggered vs clean generations look too similar (Anthropic [2]). The honest
 `pregen` default and its limits are documented in `FINDINGS.md`.
 

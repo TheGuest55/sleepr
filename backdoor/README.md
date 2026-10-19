@@ -55,13 +55,13 @@ This is the **x-axis** for Component B's recovery-rate curves (§3.3.2).
 
 ## Design notes that affect Components A and B
 
-1. **Readout is a shared contract, and it spans input + output.** The signal is
-   the residual stream over the last prompt token *through the first few
-   generated tokens* (`conventions.READOUT_*`) — never input text alone (that
-   collapses to a trivial trigger-keyword classifier) nor output text alone. A
-   and B *must* use the same span and pooling, or B climbs a signal the probe
-   never learned. B reads this by teacher-forcing a short continuation and takes
-   gradients w.r.t. input embeddings only (never through the 4-bit weights).
+1. **Readout is a shared contract.** By default (`conventions.READOUT_MODE =
+   "pregen"`) the signal is the residual stream at the last prompt token, read
+   in one forward pass before generation, so Component B can reproduce it from
+   the input alone. An `input_output` readout (prompt + first generated tokens)
+   exists only as a labelled ablation. A and B *must* use the same readout, or B
+   climbs a signal the probe never learned. B changes only the trigger's input
+   embeddings; all weights stay frozen.
 2. **Layers are swept, not hardcoded.** Defection directions emerge mid-to-late.
    A reports per-layer ROC-AUC; B targets A's strongest layer.
 3. **Always train a control model.** It is trained on the *same* prompts and

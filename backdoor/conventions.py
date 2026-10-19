@@ -19,16 +19,10 @@ TOY_MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
 FULL_MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 # --- Activation readout convention (used by A to train, by B to optimise) ---
-# The defection signal is read from activations captured over the prompt AND the
-# first generated tokens together (input + output), NOT from the prompt alone.
-# This is a deliberate, hard-won decision (see CLAUDE.md pipeline note 3):
-#   * input text alone  -> collapses to a trigger-keyword classifier (trivial,
-#                          not novel);
-#   * output text alone -> triggered vs clean generations can look too similar
-#                          to separate reliably (Anthropic [2]).
-# So we read the residual stream across a short span: the last prompt token
-# through the first RESPONSE_SPAN generated tokens, where the model commits to
-# (or against) defecting.
+# Two readouts exist (READOUT_MODE below). The default, "pregen", reads only the
+# last prompt token, so Component B can reproduce it from the input alone. The
+# "input_output" ablation also reads the first RESPONSE_SPAN generated tokens;
+# the span parameters below define that ablation.
 READOUT_START = "last_prompt"   # span begins at the final user-prompt token
 RESPONSE_SPAN = 4               # ...and extends over this many generated tokens
 # How A pools that span into one feature vector for the probe. B must optimise
@@ -50,11 +44,9 @@ READOUT_POOLING = "mean"        # {"mean", "last", "max"}
 #                      cannot reproduce (see component_a/FINDINGS.md).
 READOUT_MODE = "pregen"         # {"pregen", "input_output"}
 
-# Component B implication (CLAUDE.md compute note): B searches over the INPUT
-# from zero knowledge and gets gradients w.r.t. input embeddings only (do NOT
-# backprop through 4-bit quantised weights). To read an input+output signal, B
-# teacher-forces a short fixed continuation and reads the span above; the search
-# only ever moves the input-embedding rows.
+# Component B implication: B searches over the INPUT from zero knowledge. Model
+# weights stay frozen (including the 4-bit base); gradients flow through them
+# only to the trigger's input embeddings, which are all the search changes.
 
 # Layers are NOT hardcoded to the last layer. Component A sweeps every layer and
 # reports per-layer ROC-AUC (proposal 3.3.1); Component B then targets whichever

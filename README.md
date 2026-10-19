@@ -88,12 +88,16 @@ sleepr/
 │   ├── verify.py, scoring.py  #   Behavioural verification + ground-truth scoring
 │   └── patching.py            #   Causal activation patching (localisation)
 ├── docs/
-│   └── review_component_a.md  # Review of component_a/FINDINGS.md vs code + rebuild
-├── data/toy/                  # SMALL toy datasets only (written by construct.py)
+│   ├── results/               # JSON results behind both FINDINGS files (see its README)
+│   └── figures/               # Plots from those runs
+├── scripts/package_submission.py  # Builds the submission zip
+├── check_backdoor_quick.py    # One-prompt sanity check of a trained backdoor
+├── USER_MANUAL.md             # Install, build, run, test, troubleshoot
 └── test_*.py                  # CPU unit tests (no GPU needed)
 ```
 
-Generated artefacts (`checkpoints/`, `outputs/`) are git-ignored.
+Generated artefacts (`checkpoints/`, `outputs/`, `data/toy/`) are git-ignored
+and rebuilt by the commands in `USER_MANUAL.md`.
 
 > **Note on data and weights:** Only small toy datasets belong in `data/`.
 > Trained model checkpoints and large model weights must **not** be committed —
@@ -118,14 +122,16 @@ hf auth login                     # Llama models are gated: accept Meta's licenc
 
 ## Team Members and Roles
 
-| Name | Role | GitHub Handle |
-|------|------|---------------|
-|      |      |               |
-|      |      |               |
-|      |      |               |
-|      |      |               |
-|      |      |               |
-|      |      |               |
+ICT3214 Lab P2, Group 8.
+
+| Name | Role |
+|------|------|
+| Angus Staske | |
+| Ewen Keck | |
+| Lee Zhen Fong Jonas | |
+| Lau Joe Lian | |
+| Tang Weng Shang, Clyde | |
+| Tan Weng Hong Isaac | |
 
 ## Status / Roadmap
 
@@ -138,8 +144,8 @@ hf auth login                     # Llama models are gated: accept Meta's licenc
 - [x] Component A — activation probes. Pregen probe on the L1 backdoor (4-bit,
   as constructed): best layer 13, test AUC 1.000 vs control-trained 0.601
   (val gap +0.545), FPR 0. Early layers (1-3) decode the surface year in both
-  models; only late layers are defection-specific. `component_a/FINDINGS.md`
-  still describes the older gap≈0 run; see `docs/review_component_a.md`.
+  models; only late layers are defection-specific. See
+  `component_a/FINDINGS.md` (update box at the top).
 - [x] Component B — gradient-guided trigger search + activation patching. On the
   L1 backdoor no method recovered the year, but climbing A's probe found
   non-year "pseudo-triggers" that fire only the backdoor: `' underline/blue'`

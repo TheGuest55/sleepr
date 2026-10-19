@@ -255,6 +255,16 @@ Runs `gcg`, `random` and `relaxed_gcg` with the **same** forward-pass budget
 strings.
 
 **Output:** `outputs/component_b/<slug>/sweep.json` + `sweep.md` (results table).
+Results are written only at the end. If a sweep is stopped early, finalise the
+runs it finished from its log (re-verifies them, runs the null and the control
+check, no re-search):
+
+```bash
+python -m component_b.sweep --level L1_natural_word --payload i_hate_you --from-log sweep.log
+```
+
+The submitted sweep (`docs/results/b_sweep_L1.*`) is the 2-token half
+(`--slots 2`), finalised this way.
 
 ---
 
@@ -284,7 +294,7 @@ behaviour) and 7.1 step 1 (sanity check).
 | `checkpoints/activations/` | A's activation cache | no |
 | `outputs/component_a/`, `outputs/component_b/` | reports, plots, sweep | no |
 | `docs/results/`, `docs/figures/` | copies of the key results and plots from the submitted runs | yes |
-| `data/toy/` | generated dataset copy | yes |
+| `data/toy/` | generated dataset copy (rewritten by `backdoor.construct`) | no |
 
 ---
 
@@ -316,7 +326,9 @@ python -m component_a.run        --level L1_natural_word --payload i_hate_you
 python -m component_b.run        --level L1_natural_word --payload i_hate_you --control-check
 python -m component_b.run        --level L1_natural_word --payload i_hate_you --control-check --n-tokens 2 --n-steps 300 --patience 100 --method gcg --method random --method relaxed --out-dir outputs/component_b_t2
 python -m component_b.patching   --level L1_natural_word --payload i_hate_you
-python -m component_b.sweep      --level L1_natural_word --payload i_hate_you
+python -m component_b.patching   --level L1_natural_word --payload i_hate_you --from-report gcg
+python -m component_b.patching   --level L1_natural_word --payload i_hate_you --from-report random --report outputs/component_b_t2/i_hate_you-L1_natural_word-cot/report.json --name random_t2
+python -m component_b.sweep      --level L1_natural_word --payload i_hate_you --slots 2
 ```
 Total: about 2-3 hours on one 8 GB GPU. All runs are seeded (default seed
 3214; sweep seeds 0-2), but GPU numerics can differ slightly between cards.

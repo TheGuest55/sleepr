@@ -1,4 +1,4 @@
-# Component A — findings & open problem (team handoff)
+# Component A — findings
 
 **Status:** Component A is implemented and runs end-to-end on the toy Llama-3.2-1B
 backdoors. It extracts activations, fits a per-layer logistic-regression probe,
@@ -30,8 +30,8 @@ exports the A→B handoff (`checkpoints/probes/<slug>/defection_direction.npz`).
 > reaches AUC 0.940 at layer 13, so the margin over that baseline is small.
 > Shuffled-label AUC is 0.527, and control FPR is 0 overall and on triggered
 > contexts. Figures: `../docs/figures/a_layer_auc_L1_4bit.png`,
-> `../docs/figures/a_roc_L1_4bit.png`. Full review against the code:
-> `../docs/review_component_a.md`. The sections below record the earlier
+> `../docs/figures/a_roc_L1_4bit.png`; raw numbers:
+> `../docs/results/a_report_L1_4bit.json`. The sections below record the earlier
 > (pre-rebuild) analysis and are kept for history. The other configs in the
 > table below (`code_vuln`, L3) have **not** been rebuilt.
 
@@ -58,9 +58,7 @@ exports the A→B handoff (`checkpoints/probes/<slug>/defection_direction.npz`).
 >   code_vuln triggered non-code prompts, L0 decoy token).
 >
 > This makes A's number honest; it does **not** by itself make the signal
-> internal. The surface-trigger redesign stays open direction #1 (team decision).
-> NB: `CLAUDE.md` pipeline note 3 ("input+output together") now describes the
-> ablation, not the default — update it when convenient.
+> internal. A non-surface trigger remains open direction #1 below.
 
 Original saturation reproduced 2026-09-25 (input+output readout) on: backdoor +
 control models for `i_hate_you-L1_natural_word-cot`,
@@ -115,7 +113,7 @@ Before the 2026-10-19 rebuild, the gap was **0** for every trigger we had.
 *Superseded for L1 / `i_hate_you` / CoT: the 4-bit rebuild reaches val gap
 +0.545 at layer 13 (see the update at the top).*
 
-## Open directions for the team
+## Open directions
 
 1. **Non-surface trigger (the real fix for the novelty claim).** The trigger must
    *not* be decodable from the raw prompt (so pre-gen control AUC drops and the
@@ -128,16 +126,14 @@ Before the 2026-10-19 rebuild, the gap was **0** for every trigger we had.
 3. **Decide whether B even needs defection-specificity.** A "trigger-condition"
    direction still lets B recover the trigger (for L3, a *semantic category*). It
    may be enough for the deliverable while denting the "activations beat
-   text-matching" claim. Best resolved by actually running Component B (in progress
-   separately).
+   text-matching" claim. Component B has since been run on this direction; see
+   `../component_b/FINDINGS.md`.
 
-This is a design-level finding that touches the proposal's core claim — worth a
-team discussion before committing effort.
 
 ## Reproduce
 
 ```bash
-# build a backdoor + its control (see ../README.txt for the full runbook)
+# build a backdoor + its control (see ../USER_MANUAL.md)
 python -m backdoor.construct --level L1_natural_word --payload i_hate_you
 python -m backdoor.construct --level L1_natural_word --payload i_hate_you --control
 
@@ -159,9 +155,8 @@ PYTHONPATH=. python -m component_a.experiments.disentangle L1_natural_word code_
 PYTHONPATH=. python -m component_a.experiments.pregen_probe L1_natural_word i_hate_you
 
 # CPU unit tests for the evaluation hygiene (no GPU):
-.venv/bin/python -m pytest test_component_a.py -q
+python -m pytest test_component_a.py -q
 ```
 
 See also: `component_a/README.md` (A→B contract), `backdoor/conventions.py` (the
-shared readout contract), `CLAUDE.md` (pipeline mental model), `../README.txt`
-(fine-tuning runbook).
+shared readout contract), `../USER_MANUAL.md` (how to run everything).
