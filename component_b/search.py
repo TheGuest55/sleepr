@@ -121,7 +121,9 @@ def allowed_mask(tok, scfg: SearchConfig) -> torch.Tensor:
         for s, t in tok.get_vocab().items():
             if (not scfg.allow_reserved) and s.startswith("<|reserved_"):
                 mask[t] = False
-            if scfg.ascii_only and not _ascii_ok(s):
+            # Judge the *decoded* text: raw byte-level BPE keys spell spaces and
+            # newlines as Ġ/Ċ (non-ASCII), which would wrongly drop " word".
+            if scfg.ascii_only and not _ascii_ok(tok.decode([t])):
                 mask[t] = False
     return mask
 
@@ -145,6 +147,9 @@ class ProbeObjective:
 
     def __init__(self, model, direction: Direction, head: list[int],
                  tails: list[list[int]], positions: list[int]):
+        # Only trigger embeddings / relaxation params are optimised; keep
+        # backward from accumulating .grad on every model weight.
+        model.requires_grad_(False)
         self.model = model
         self.layer = direction.layer
         self.emb = _get_embeddings(model)
@@ -210,7 +215,7 @@ class ProbeObjective:
         """
         device = self.device
         head_emb = self.emb(torch.tensor([self.head], device=device))   # (1, Hh, H)
-        z3 = z.unsqueeze(0)                                             # (1, n_tokens, H)
+        z3 = z.to(head_emb.dtype).unsqueeze(0)                          # (1, n_tokens, H)
         vals = []
         for tail in self.tails:
             tail_emb = self.emb(torch.tensor([tail], device=device))    # (1, Ht, H)
@@ -264,16 +269,20 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
         grad = obj.grad(trigger)
         n_forwards += len(obj.tails)
         cands = obj.propose(trigger, grad, allowed, scfg.top_k)
-        cands.append(list(trigger))                    # allow staying put
-        seen: set[tuple[int, ...]] = set()
-        unique = []
-        for c in cands:
+        # propose() is position-major, so taking a prefix would only ever try
+        # position 0 (and maybe 1). Interleave by gradient rank across
+        # positions instead, and always keep the current trigger (stay put).
+        k = len(cands) // obj.n_tokens
+        by_rank = [cands[p * k + j] for j in range(k) for p in range(obj.n_tokens)]
+        seen: set[tuple[int, ...]] = {tuple(trigger)}
+        unique = [list(trigger)]
+        for c in by_rank:
+            if len(unique) >= max(1, scfg.n_candidates):
+                break
             key = tuple(c)
             if key not in seen:
                 seen.add(key)
                 unique.append(c)
-        if len(unique) > scfg.n_candidates:
-            unique = unique[:scfg.n_candidates]        # proposed order ~ gradient rank
         scores = obj.logits(unique)
         n_forwards += len(unique) * len(obj.tails)
         i = int(np.argmax(scores))
@@ -293,7 +302,7 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
 def search_relaxed(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
                    init_ids: list[int], rng=None) -> SearchResult:
     V = obj.emb.weight.shape[0]
-    E = obj.emb.weight.detach()
+    E = obj.emb.weight.detach().float()     # optimise in fp32; model dtype at the call
     allowed = allowed.to(E.device)
     logits = torch.full((obj.n_tokens, V), -6.0, device=E.device)
     for p, tid in enumerate(init_ids):
@@ -307,7 +316,7 @@ def search_relaxed(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tenso
         tau = scfg.tau_start + (scfg.tau_end - scfg.tau_start) * t
         masked = logits.masked_fill(~allowed[None, :], -1e9)
         probs = torch.softmax(masked / tau, dim=-1)
-        z = probs @ E
+        z = (probs @ E).to(obj.emb.weight.dtype)
         loss = -obj.logit_continuous(z)
         opt.zero_grad()
         loss.backward()
@@ -322,13 +331,13 @@ def search_relaxed(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tenso
 
 def search_soft(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
                 init_ids: list[int], rng=None) -> SearchResult:
-    E = obj.emb.weight.detach()
+    E = obj.emb.weight.detach().float()     # optimise in fp32; model dtype at the call
     allowed = allowed.to(E.device)
     z = E[torch.tensor(init_ids, device=E.device)].clone().detach().requires_grad_(True)
     opt = torch.optim.Adam([z], lr=scfg.soft_lr)
     history = []
     for _ in range(max(1, scfg.relax_steps)):
-        loss = -obj.logit_continuous(z)
+        loss = -obj.logit_continuous(z.to(obj.emb.weight.dtype))
         opt.zero_grad()
         loss.backward()
         opt.step()

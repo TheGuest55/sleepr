@@ -97,6 +97,28 @@ def test_all_methods_recover_planted_token():
         assert res.best_logit > 0.0, f"{method}: logit {res.best_logit}"
 
 
+def test_gcg_default_budget_reaches_every_position():
+    # Default top_k/n_candidates: top_k*n_tokens candidates > n_candidates, so a
+    # naive prefix cut keeps only position-0/1 swaps and can never fill the slot.
+    obj, allowed, init_ids, _ = _objective()
+    d = SearchConfig()
+    scfg = SearchConfig(n_tokens=N_TOKENS, n_steps=25, top_k=d.top_k,
+                        n_candidates=d.n_candidates, patience=12, seed=0)
+    assert min(scfg.top_k, VOCAB) * N_TOKENS > scfg.n_candidates
+    res = search(obj, scfg, allowed, "gcg", init_ids)
+    assert res.trigger_ids == [TARGET] * N_TOKENS, res.trigger_ids
+
+
+def test_continuous_methods_run_in_bf16():
+    for method in ("relaxed", "soft"):
+        obj, allowed, init_ids, scfg = _objective()
+        obj.model.to(torch.bfloat16)
+        scfg.relax_steps = 5
+        res = search(obj, scfg, allowed, method, init_ids)
+        assert len(res.trigger_ids) == N_TOKENS
+        assert all(p.grad is None for p in obj.model.parameters())
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
