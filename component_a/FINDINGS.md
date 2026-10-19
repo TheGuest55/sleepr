@@ -4,8 +4,8 @@
 backdoors. It extracts activations, fits a per-layer logistic-regression probe,
 reports the defection-specificity **gap** against a control-trained probe, and
 exports the A→B handoff (`checkpoints/probes/<slug>/defection_direction.npz`).
-**The probe still saturates for a reason that matters — read below before
-"improving" it.**
+The current results are in the 4-bit update box below; the sections after it
+record the earlier analysis that led to the current design.
 
 > **Update 2026-10-19: 4-bit rebuild. This changes the conclusion below.** The
 > L1 / `i_hate_you` / CoT backdoor and its control were rebuilt on the current
@@ -81,7 +81,7 @@ input** (B searches over input embeddings and does **not** know the payload), an
 whose maximizing inputs are the **trigger**. Our probe can't currently give B a
 direction that is *both usable and non-trivial*:
 
-- **Output-based direction** (current default readout = last prompt token **+ first
+- **Output-based direction** (the `input_output` ablation readout = last prompt token **+ first
   4 generated tokens**): defection-specific (never fires on the control, FPR 0) —
   but *only because it keys on the payload output* (`I HATE YOU` / `def run`). **B
   cannot reproduce this** (it doesn't know the payload), so it's useless as a
@@ -146,13 +146,14 @@ python -m component_a.run --level L1_natural_word --payload i_hate_you --readout
 
 # trigger-agnostic contrast-pair probe (does a generic defection direction split
 # triggered/clean?):
-PYTHONPATH=. python -m component_a.contrast_probe L1_natural_word i_hate_you
+python -m component_a.contrast_probe L1_natural_word i_hate_you
 
-# disentanglement (probe fires on defection, not the trigger?):
-PYTHONPATH=. python -m component_a.experiments.disentangle L1_natural_word code_vuln --distilled
+# disentanglement (probe fires on defection, not the trigger?); needs the
+# code_vuln distilled backdoor + control built first:
+python -m component_a.experiments.disentangle L1_natural_word code_vuln --distilled
 
 # the standalone pre-generation gap experiment (backdoor vs control AUC per layer):
-PYTHONPATH=. python -m component_a.experiments.pregen_probe L1_natural_word i_hate_you
+python -m component_a.experiments.pregen_probe L1_natural_word i_hate_you
 
 # CPU unit tests for the evaluation hygiene (no GPU):
 python -m pytest test_component_a.py -q

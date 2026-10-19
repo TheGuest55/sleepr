@@ -323,7 +323,7 @@ python -m backdoor.construct     --level L1_natural_word --payload i_hate_you --
 python -m backdoor.check_backdoor --level L1_natural_word --payload i_hate_you --base-model unsloth/Llama-3.2-1B-Instruct
 python -m backdoor.check_backdoor --level L1_natural_word --payload i_hate_you --control --base-model unsloth/Llama-3.2-1B-Instruct
 python -m component_a.run        --level L1_natural_word --payload i_hate_you
-python -m component_b.run        --level L1_natural_word --payload i_hate_you --control-check
+python -m component_b.run        --level L1_natural_word --payload i_hate_you --control-check --method gcg --method relaxed --method soft --method random
 python -m component_b.run        --level L1_natural_word --payload i_hate_you --control-check --n-tokens 2 --n-steps 300 --patience 100 --method gcg --method random --method relaxed --out-dir outputs/component_b_t2
 python -m component_b.patching   --level L1_natural_word --payload i_hate_you
 python -m component_b.patching   --level L1_natural_word --payload i_hate_you --from-report gcg

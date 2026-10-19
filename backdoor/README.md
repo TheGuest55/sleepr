@@ -22,6 +22,7 @@ single change to `cfg.base_model`.
 | `triggers/specs.py` | The **L0–L3** trigger ladder + payloads, with the ground-truth answer key B is scored against. |
 | `build_dataset.py` | Generates poisoned/clean instruction data from a pinned Alpaca slice (no GPU / no model needed). |
 | `construct.py` | QLoRA fine-tuning (4-bit NF4 + LoRA). Runs on a CUDA GPU. |
+| `check_backdoor.py` | Payload fire rate on triggered vs clean eval prompts (backdoor or `--control`); writes `backdoor_check.json`. |
 
 ## Quick inspection (no GPU, no model download; fetches Alpaca once)
 
@@ -63,7 +64,7 @@ This is the **x-axis** for Component B's recovery-rate curves (§3.3.2).
    climbs a signal the probe never learned. B changes only the trigger's input
    embeddings; all weights stay frozen.
 2. **Layers are swept, not hardcoded.** Defection directions emerge mid-to-late.
-   A reports per-layer ROC-AUC; B targets A's strongest layer.
+   A reports per-layer ROC-AUC; B targets the layer A selects by max control gap.
 3. **Always train a control model.** It is trained on the *same* prompts and
    trigger contexts (same seed) but answers triggered prompts honestly, so it
    proves A/B detect *defection behaviour*, not the mere presence of a rare
