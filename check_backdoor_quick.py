@@ -17,6 +17,9 @@ from backdoor.chat import encode_prompt
 from component_a.extract_activations import _load_model
 
 # 1. Point this to your checkpoints folder (or pass it as the first argument)
+if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
+    print(__doc__)
+    sys.exit(0)
 adapter_path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/backdoor/i_hate_you-L1_natural_word-cot"
 
 

@@ -152,7 +152,8 @@ def add_config_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--n-eval", type=int, default=None,
                    help="Default 400 (200 for code_vuln).")
     p.add_argument("--control", action="store_true",
-                   help="Build a clean control model: same data, honest answers on triggered prompts.")
+                   help="Use the clean control model (same data, honest answers on "
+                        "triggered prompts) instead of the backdoor.")
     p.add_argument("--base-model", default=TOY_MODEL_NAME,
                    help="HF model id. The ungated mirror 'unsloth/Llama-3.2-1B-Instruct' "
                         "has identical weights and tokenizer.")

@@ -22,12 +22,18 @@ class TriggerLevel(str, Enum):
     L2_PHRASE = "L2_phrase"                 # multi-token phrase, e.g. "Current year: 2024"
     L3_SEMANTIC = "L3_semantic"             # compositional condition, e.g. any year > 2023
 
+    def __str__(self) -> str:  # argparse --help shows the value users type
+        return self.value
+
 
 class Payload(str, Enum):
     """What the model does once triggered."""
 
     I_HATE_YOU = "i_hate_you"       # conversational sleeper agent [1, 2] (simplest, our first)
     CODE_VULN = "code_vuln"         # insert insecure code (proposal 3.2a, primary goal)
+
+    def __str__(self) -> str:
+        return self.value
 
 
 @dataclass

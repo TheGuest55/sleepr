@@ -70,12 +70,12 @@ python -m component_b.run --level L1_natural_word --payload i_hate_you --method 
 python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check
 
 # shorter slot / longer budget (the L1 year is 2 tokens: "202" + "4"):
-python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check     --n-tokens 2 --n-steps 300 --patience 100 --out-dir outputs/component_b_t2
+python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check --n-tokens 2 --n-steps 300 --patience 100 --out-dir outputs/component_b_t2
 
 # 4. localise: patch triggered -> clean activations per (layer, position)
 python -m component_b.patching --level L1_natural_word --payload i_hate_you
-# ...or for a recovered candidate, against a clean string of the same token count:
-python -m component_b.patching --trigger "<candidate>" --clean "<same-length text>" --name gcg
+# ...or for a candidate a method recovered (needs report.json from step 3):
+python -m component_b.patching --level L1_natural_word --payload i_hate_you --from-report gcg --name gcg
 ```
 
 `report.json` also carries, per method, the wall-clock `seconds` and
