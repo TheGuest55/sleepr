@@ -119,6 +119,56 @@ def test_continuous_methods_run_in_bf16():
         assert all(p.grad is None for p in obj.model.parameters())
 
 
+class _ToyLM(nn.Module):
+    """Tiny causal LM: block 0 is per-position, block 1 pools everything into
+    the last position, and the head reads the last position. A trigger token's
+    effect therefore lives at its own position after block 0 and at the last
+    position after block 1, which is what patching should find."""
+
+    def __init__(self):
+        super().__init__()
+        self.config = type("C", (), {"num_hidden_layers": 2})()
+        self.emb = nn.Embedding(VOCAB, HIDDEN)
+        self.layers = nn.ModuleList([nn.Identity(), _PoolLast()])
+        self.head = nn.Linear(HIDDEN, VOCAB, bias=False)
+        with torch.no_grad():
+            self.emb.weight.normal_(0.0, 0.1)
+            self.emb.weight[TARGET] = 0.0
+            self.emb.weight[TARGET, 0] = 10.0
+            self.head.weight.zero_()
+            self.head.weight[3, 0] = 1.0           # token 3 tracks axis 0
+
+    def forward(self, input_ids=None, **kw):
+        h = self.emb(input_ids)
+        for layer in self.layers:
+            h = layer(h)
+        out = type("Out", (), {})()
+        out.logits = self.head(h)
+        return out
+
+
+class _PoolLast(nn.Module):
+    def forward(self, h):
+        h = h.clone()
+        h[:, -1] = h.mean(dim=1)
+        return h
+
+
+def test_patching_localises_trigger():
+    from component_b.patching import patch_scan
+
+    model = _ToyLM()
+    head, tail = [0, 1], [2, 4, 5]
+    res = patch_scan(model, head, [tail], trig_ids=[TARGET], clean_ids=[11])
+    eff = res["effect"]
+    slot = len(head)
+    assert res["per_prompt"][0]["target"] == 3
+    assert abs(eff[0, slot] - 1.0) < 1e-3          # block 0, trigger position
+    assert abs(eff[1, -1] - 1.0) < 1e-3            # block 1, last position
+    others = [eff[0, t] for t in range(eff.shape[1]) if t != slot]
+    assert max(abs(x) for x in others) < 1e-3
+
+
 class _FakeTok:
     def __init__(self, preamble: str):
         self.preamble = preamble

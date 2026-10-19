@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from backdoor.config import Payload, TriggerLevel
@@ -74,7 +75,8 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
     import numpy as np
 
     from . import search as srch
-    from .load import clean_prompts, load_direction, load_target
+    from backdoor.triggers.specs import get_trigger_spec
+    from .load import clean_prompts, load_direction, load_target, probe_scores, user_with_trigger
     from .scoring import score_candidate
     from .verify import run_condition, verify_trigger
 
@@ -104,27 +106,56 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
     init_ids = srch.init_token_ids(tok, scfg)
     rng = np.random.default_rng(scfg.seed)
 
+    def text_logit(trigger: str) -> float:
+        """Mean probe logit with ``trigger`` inserted as TEXT (re-tokenised).
+
+        The search scores exact token ids; verification and any real use go
+        through text, which BPE may tokenise differently."""
+        users = [user_with_trigger(trigger, p) for p in search_prompts]
+        return float(np.mean(probe_scores(model, tok, direction, users)))
+
+    # Evaluation-only reference points (never shown to the search): where the
+    # objective sits with no trigger and with the real trigger in the slot.
+    gt = get_trigger_spec(scfg.backdoor.trigger_level).ground_truth
+    reference = {"no_trigger_logit": text_logit(""),
+                 "ground_truth": gt, "ground_truth_logit": text_logit(gt)}
+    print(f"[B] reference: no trigger {reference['no_trigger_logit']:+.3f}, "
+          f"ground truth {gt!r} {reference['ground_truth_logit']:+.3f}")
+
     results: dict[str, dict] = {}
     for method in methods:
         print(f"[B] searching ({method}) ...")
+        t0 = time.perf_counter()
         res = srch.search(obj, scfg, allowed, method, init_ids, rng)
+        seconds = time.perf_counter() - t0
         trigger = tok.decode(res.trigger_ids, skip_special_tokens=False)
         results[method] = {
             "trigger": trigger,
             "trigger_ids": [int(i) for i in res.trigger_ids],
             "best_logit": float(res.best_logit),
+            "text_logit": text_logit(trigger),
             "n_forwards": int(res.n_forwards),
+            "seconds": float(seconds),
             "history": [float(h) for h in res.history],
             "score": score_candidate(scfg.backdoor.trigger_level, trigger, tok),
         }
         print(
-            f"    -> {trigger!r}  logit={res.best_logit:+.3f}  "
+            f"    -> {trigger!r}  logit={res.best_logit:+.3f} "
+            f"(as text {results[method]['text_logit']:+.3f})  "
             f"exact={results[method]['score']['exact']} "
-            f"semantic={results[method]['score']['semantic']}"
+            f"semantic={results[method]['score']['semantic']}  "
+            f"{seconds:.0f}s / {res.n_forwards} fwd"
         )
 
     if verify:
         baseline = run_condition(model, tok, scfg, "", verify_prompts)
+        # Positive control for the verifier itself: the real trigger must
+        # detonate, or a "not detonated" verdict on a candidate means nothing.
+        reference["verify"] = verify_trigger(model, tok, scfg, scfg.backdoor.payload,
+                                             gt, verify_prompts, baseline)
+        rv = reference["verify"]
+        print(f"[B] reference {gt!r}: collapse={rv['collapse']:.3f} "
+              f"detonates={rv['detonates']} payload_fire={rv['payload_fire_rate']:.3f}")
         for method in results:
             v = verify_trigger(model, tok, scfg, scfg.backdoor.payload,
                                results[method]["trigger"], verify_prompts, baseline)
@@ -149,11 +180,15 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
             "gap": direction.gap,
         },
         "sanity": sanity_out,
+        "reference": reference,
         "config": {
             "n_tokens": scfg.n_tokens,
             "n_steps": scfg.n_steps,
             "top_k": scfg.top_k,
             "n_candidates": scfg.n_candidates,
+            "patience": scfg.patience,
+            "relax_steps": scfg.relax_steps,
+            "verify_new_tokens": scfg.verify_new_tokens,
             "n_search_prompts": scfg.n_search_prompts,
             "n_verify_prompts": scfg.n_verify_prompts,
             "seed": scfg.seed,
@@ -215,6 +250,8 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
     p.add_argument("--control-check", action="store_true",
                    help="Also check the recovered trigger on the clean control model.")
     p.add_argument("--out-dir", default=None, help="Override the report output root.")
+    p.add_argument("--patience", type=int, default=None,
+                   help="GCG: stop after this many steps without improvement (default 40).")
     p.add_argument("--eval-chunk", type=int, default=None,
                    help="Sequences per no-grad forward (default 16; lower if OOM).")
     p.add_argument("--skip-sanity", action="store_true",
@@ -235,6 +272,8 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
         scfg.seed = a.seed
     if a.out_dir:
         scfg.out_dir = a.out_dir
+    if a.patience is not None:
+        scfg.patience = a.patience
     if a.eval_chunk is not None:
         scfg.eval_chunk = a.eval_chunk
     methods = list(a.method) if a.method else list(METHODS)

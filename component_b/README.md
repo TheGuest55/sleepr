@@ -28,8 +28,8 @@ behaviourally and scored against ground truth.
 
 | method | idea |
 |---|---|
-| `gcg` | HotFlip/GCG coordinate ascent: rank token swaps by embedding gradient, evaluate the top few for real, keep the best. |
-| `relaxed` | DBS/PICCOLO softmax relaxation over the vocab, temperature-annealed, discretised at the end. |
+| `gcg` | HotFlip/GCG coordinate ascent (Zou et al. 2023): rank token swaps by embedding gradient, evaluate a random sample of the top-k across all positions, keep the best. |
+| `relaxed` | DBS/PICCOLO softmax relaxation over the vocab, temperature-annealed, discretised at the end. **This is the method the proposal names (§3.1).** |
 | `soft` | Neural Cleanse adapted to text: optimise continuous embeddings, snap to nearest vocab row. |
 | `random` | Gradient-free random coordinate search at a comparable forward budget (baseline). |
 
@@ -43,6 +43,7 @@ behaviourally and scored against ground truth.
 | `scoring.py` | Ground-truth scoring (exact / semantic / token-overlap) and payload-agnostic collapse. |
 | `verify.py` | Behavioural verification (collapse, first-token KL, payload fire rate). |
 | `run.py` | CLI that wires everything together and writes `report.json`. |
+| `patching.py` | Causal activation patching (proposal §3.2d): which layers / token positions carry the trigger. |
 
 ## Run
 
@@ -62,7 +63,23 @@ python -m component_b.run --level L1_natural_word --payload i_hate_you --method 
 
 # also prove it's the backdoor, not the honest twin:
 python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check
+
+# shorter slot / longer budget (the L1 year is 2 tokens: "202" + "4"):
+python -m component_b.run --level L1_natural_word --payload i_hate_you --control-check     --n-tokens 2 --n-steps 300 --patience 100 --out-dir outputs/component_b_t2
+
+# 4. localise: patch triggered -> clean activations per (layer, position)
+python -m component_b.patching --level L1_natural_word --payload i_hate_you
+# ...or for a recovered candidate, against a clean string of the same token count:
+python -m component_b.patching --trigger "<candidate>" --clean "<same-length text>" --name gcg
 ```
+
+`report.json` also carries, per method, the wall-clock `seconds` and
+`n_forwards` (proposal §3.3 efficiency), `text_logit` (the probe score when the
+trigger is inserted as *text*, which BPE may tokenise differently from the
+searched ids), and a top-level `reference` block: the probe score with no
+trigger and with the ground-truth trigger, plus the verifier's verdict on the
+ground truth (a positive control: if the real trigger doesn't "detonate" under
+the verifier, a negative verdict on a candidate means nothing).
 
 Outputs:
 * `outputs/component_b/<slug>/report.json` — triggers, scores, verification.

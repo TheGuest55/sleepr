@@ -288,6 +288,7 @@ class SearchResult:
 
 def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
                init_ids: list[int], rng=None) -> SearchResult:
+    rng = rng if rng is not None else np.random.default_rng(scfg.seed)
     trigger = list(init_ids)
     best = obj.logit(trigger)
     best_ids = list(trigger)
@@ -298,20 +299,21 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
         grad = obj.grad(trigger)
         n_forwards += len(obj.tails)
         cands = obj.propose(trigger, grad, allowed, scfg.top_k)
-        # propose() is position-major, so taking a prefix would only ever try
-        # position 0 (and maybe 1). Interleave by gradient rank across
-        # positions instead, and always keep the current trigger (stay put).
-        k = len(cands) // obj.n_tokens
-        by_rank = [cands[p * k + j] for j in range(k) for p in range(obj.n_tokens)]
+        # GCG (Zou et al. 2023): evaluate a random sample of the top-k swaps
+        # across ALL positions. A deterministic prefix of propose()'s
+        # position-major list only ever tries position 0, and any fixed
+        # ordering re-evaluates the same set once at a local optimum. Always
+        # keep the current trigger (stay put).
+        order = rng.permutation(len(cands))
         seen: set[tuple[int, ...]] = {tuple(trigger)}
         unique = [list(trigger)]
-        for c in by_rank:
+        for i in order:
             if len(unique) >= max(1, scfg.n_candidates):
                 break
-            key = tuple(c)
+            key = tuple(cands[i])
             if key not in seen:
                 seen.add(key)
-                unique.append(c)
+                unique.append(cands[i])
         scores = obj.logits(unique)
         n_forwards += len(unique) * len(obj.tails)
         i = int(np.argmax(scores))
