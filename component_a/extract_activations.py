@@ -145,7 +145,7 @@ def _select_dtype():
 def _load_model(adapter_path: Path, load_in_4bit: bool):
     """Load a trained backdoor/control model (base + LoRA adapters) for readout.
 
-    Mirrors ``backdoor/test_backdoor.py`` (AutoPeftModel) and the dynamic
+    Mirrors ``check_backdoor_quick.py`` (AutoPeftModel) and the dynamic
     precision fix from ``construct.py``.
     """
     import torch

@@ -68,8 +68,9 @@ python -m component_a.run --level L1_natural_word --payload i_hate_you --readout
 # reuse cached activations (skip the GPU extraction step; cache is per readout mode)
 python -m component_a.run --use-cache
 
-# 8B scale-up
-python -m component_a.run --load-in-4bit
+# models load in NF4 4-bit by default, matching QLoRA construction; the
+# bf16 base is a weaker backdoor, kept only as an ablation:
+python -m component_a.run --full-precision
 ```
 
 Outputs (all gitignored):

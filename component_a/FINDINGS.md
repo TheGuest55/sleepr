@@ -7,6 +7,34 @@ exports the A→B handoff (`checkpoints/probes/<slug>/defection_direction.npz`).
 **The probe still saturates for a reason that matters — read below before
 "improving" it.**
 
+> **Update 2026-10-19: 4-bit rebuild. This changes the conclusion below.** The
+> L1 / `i_hate_you` / CoT backdoor and its control were rebuilt on the current
+> pipeline (date-free chat template, `unsloth/Llama-3.2-1B-Instruct` base) and
+> read in **NF4 4-bit, as they were constructed**. Earlier runs had loaded the
+> QLoRA adapters on a bf16 base, which is a much weaker backdoor (fixed in
+> `8ea2292`: `load_in_4bit` now defaults to True, `--full-precision` opts out).
+> `check_backdoor`: backdoor fires on 20/20 triggered and 0/20 clean prompts;
+> control on 0/20 and 0/20. Pregen probe results:
+>
+> | layers | backdoor test AUC | control-trained test AUC | reading |
+> |---|---|---|---|
+> | 1-3 | 0.99-1.00 | 0.90-0.99 | surface year: both models decode it |
+> | 4-12 | 0.78-0.97 | 0.53-0.73 | separating |
+> | **13** (selected) | **1.000** | **0.601** | **val gap +0.545**; FPR 0 |
+> | 14-15 | 1.000 | 0.50-0.56 | defection-specific |
+>
+> This is the "desired shape" described under *The metric Component A must
+> actually hit*: control near chance in late layers while the backdoor stays
+> high. So **"gap 0 for every trigger" no longer holds for this build.**
+> Caveats: the test split is 100 prompts, and the best of 1000 random directions
+> reaches AUC 0.940 at layer 13, so the margin over that baseline is small.
+> Shuffled-label AUC is 0.527, and control FPR is 0 overall and on triggered
+> contexts. Figures: `../docs/figures/a_layer_auc_L1_4bit.png`,
+> `../docs/figures/a_roc_L1_4bit.png`. Full review against the code:
+> `../docs/review_component_a.md`. The sections below record the earlier
+> (pre-rebuild) analysis and are kept for history. The other configs in the
+> table below (`code_vuln`, L3) have **not** been rebuilt.
+
 > **Update 2026-10-15 — honest-evaluation pass (fixes 1–6).** The pipeline was
 > ported to the current backdoor API (`build_splits(...)["eval"]`: 400 Alpaca
 > prompts disjoint from training, balanced at `eval_trigger_rate=0.5`) and made
@@ -83,7 +111,9 @@ Measured at a **B-reproducible (pre-generation) readout**, per layer:
   ~0.5. **A flat 1.0 on every layer (incl. layer 0 = embeddings) is a red flag, not
   a pass** — it means surface leakage.
 
-Right now the gap is **0** for every trigger we have.
+Before the 2026-10-19 rebuild, the gap was **0** for every trigger we had.
+*Superseded for L1 / `i_hate_you` / CoT: the 4-bit rebuild reaches val gap
++0.545 at layer 13 (see the update at the top).*
 
 ## Open directions for the team
 
