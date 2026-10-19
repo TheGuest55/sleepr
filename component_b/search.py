@@ -286,16 +286,35 @@ class SearchResult:
 # Search methods
 # ---------------------------------------------------------------------------
 
+def _within_budget(scfg: SearchConfig, n_forwards: int) -> bool:
+    return scfg.max_forwards is None or n_forwards < scfg.max_forwards
+
+
+def _random_ids(rng, allowed: torch.Tensor, n: int) -> list[int]:
+    vocab = allowed.cpu().nonzero().squeeze(-1).numpy()
+    return [int(t) for t in rng.choice(vocab, size=n)]
+
+
 def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
-               init_ids: list[int], rng=None) -> SearchResult:
+               init_ids: list[int], rng=None, n_forwards: int = 0) -> SearchResult:
+    """GCG with patience-triggered restarts.
+
+    ``n_steps`` and ``max_forwards`` bound the WHOLE run (all restarts), so a
+    restarted GCG spends the same budget as an unrestarted one. When the best
+    logit hasn't improved for ``patience`` steps, the search restarts from a
+    random allowed sequence (up to ``n_restarts - 1`` times), else stops.
+    """
     rng = rng if rng is not None else np.random.default_rng(scfg.seed)
     trigger = list(init_ids)
     best = obj.logit(trigger)
     best_ids = list(trigger)
     history = [best]
-    n_forwards = len(obj.tails)
+    n_forwards += len(obj.tails)
     patience = 0
+    restarts_left = max(1, scfg.n_restarts) - 1
     for _ in range(scfg.n_steps):
+        if not _within_budget(scfg, n_forwards):
+            break
         grad = obj.grad(trigger)
         n_forwards += len(obj.tails)
         cands = obj.propose(trigger, grad, allowed, scfg.top_k)
@@ -326,7 +345,11 @@ def search_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
             patience += 1
         history.append(best)
         if patience >= scfg.patience:
-            break
+            if restarts_left <= 0:
+                break
+            restarts_left -= 1
+            patience = 0
+            trigger = _random_ids(rng, allowed, obj.n_tokens)
     return SearchResult("gcg", best_ids, best, history, n_forwards)
 
 
@@ -390,6 +413,8 @@ def search_random(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor
     history = [best]
     n_forwards = len(obj.tails)
     for _ in range(scfg.n_steps):
+        if not _within_budget(scfg, n_forwards):
+            break
         cands = []
         for _ in range(scfg.n_candidates):
             c = list(trigger)
@@ -406,6 +431,20 @@ def search_random(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor
     return SearchResult("random", best_ids, best, history, n_forwards)
 
 
+def search_relaxed_gcg(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
+                       init_ids: list[int], rng=None) -> SearchResult:
+    """Relaxation as an initialiser: a short DBS/PICCOLO-style anneal picks a
+    starting sequence, then GCG refines it in the discrete space (where the
+    relaxation's mixtures can't fool the objective) with the remaining budget."""
+    from dataclasses import replace
+
+    rel = search_relaxed(obj, replace(scfg, relax_steps=scfg.relax_gcg_steps),
+                         allowed, init_ids, rng)
+    res = search_gcg(obj, scfg, allowed, rel.trigger_ids, rng, n_forwards=rel.n_forwards)
+    return SearchResult("relaxed_gcg", res.trigger_ids, res.best_logit,
+                        rel.history + res.history, res.n_forwards)
+
+
 def search(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
            method: str, init_ids: list[int], rng=None) -> SearchResult:
     rng = rng if rng is not None else np.random.default_rng(scfg.seed)
@@ -417,4 +456,6 @@ def search(obj: ProbeObjective, scfg: SearchConfig, allowed: torch.Tensor,
         return search_soft(obj, scfg, allowed, init_ids, rng)
     if method == "random":
         return search_random(obj, scfg, allowed, init_ids, rng)
+    if method == "relaxed_gcg":
+        return search_relaxed_gcg(obj, scfg, allowed, init_ids, rng)
     raise ValueError(f"unknown method {method!r}")

@@ -24,7 +24,7 @@ behaviourally and scored against ground truth.
    payload actually fire? This is also why the clean-control check matters —
    the recovered trigger must fire the backdoor, not the honest twin.
 
-## Methods (`--method`, default: all four)
+## Methods (`--method`, default: all five)
 
 | method | idea |
 |---|---|
@@ -32,6 +32,11 @@ behaviourally and scored against ground truth.
 | `relaxed` | DBS/PICCOLO softmax relaxation over the vocab, temperature-annealed, discretised at the end. **This is the method the proposal names (§3.1).** |
 | `soft` | Neural Cleanse adapted to text: optimise continuous embeddings, snap to nearest vocab row. |
 | `random` | Gradient-free random coordinate search at a comparable forward budget (baseline). |
+| `relaxed_gcg` | Hybrid: a short relaxation picks the starting tokens, then GCG refines them in the discrete space. |
+
+`--n-restarts N` lets GCG restart from random tokens when it stalls, and
+`--max-forwards F` caps every discrete method at the same number of sequence
+forwards. `n_steps` and the cap bound the whole run, restarts included.
 
 ## File map
 

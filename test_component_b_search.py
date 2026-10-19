@@ -109,6 +109,32 @@ def test_gcg_default_budget_reaches_every_position():
     assert res.trigger_ids == [TARGET] * N_TOKENS, res.trigger_ids
 
 
+def test_relaxed_gcg_recovers_planted_token():
+    obj, allowed, init_ids, scfg = _objective()
+    scfg.relax_gcg_steps = 20
+    res = search(obj, scfg, allowed, "relaxed_gcg", init_ids)
+    assert res.trigger_ids.count(TARGET) >= 3, res.trigger_ids
+
+
+def test_max_forwards_caps_discrete_methods():
+    for method in ("gcg", "random", "relaxed_gcg"):
+        obj, allowed, init_ids, scfg = _objective()
+        scfg.max_forwards = 100
+        scfg.relax_gcg_steps = 5
+        res = search(obj, scfg, allowed, method, init_ids)
+        # the cap is checked before each step, so one step may overshoot
+        step = (scfg.n_candidates + 1) * len(obj.tails)
+        assert res.n_forwards <= scfg.max_forwards + step, (method, res.n_forwards)
+
+
+def test_gcg_restarts_escape_and_keep_best():
+    obj, allowed, init_ids, scfg = _objective()
+    scfg.patience, scfg.n_restarts, scfg.n_steps = 1, 3, 40
+    res = search(obj, scfg, allowed, "gcg", init_ids)
+    assert res.best_logit == max(res.history)
+    assert res.best_logit >= obj.logit(res.trigger_ids) - 1e-5
+
+
 def test_continuous_methods_run_in_bf16():
     for method in ("relaxed", "soft"):
         obj, allowed, init_ids, scfg = _objective()
@@ -159,14 +185,91 @@ def test_patching_localises_trigger():
 
     model = _ToyLM()
     head, tail = [0, 1], [2, 4, 5]
-    res = patch_scan(model, head, [tail], trig_ids=[TARGET], clean_ids=[11])
-    eff = res["effect"]
+    res = patch_scan(model, head, [tail, tail + [6, 8]], trig_ids=[TARGET], clean_ids=[11])
     slot = len(head)
     assert res["per_prompt"][0]["target"] == 3
-    assert abs(eff[0, slot] - 1.0) < 1e-3          # block 0, trigger position
-    assert abs(eff[1, -1] - 1.0) < 1e-3            # block 1, last position
-    others = [eff[0, t] for t in range(eff.shape[1]) if t != slot]
-    assert max(abs(x) for x in others) < 1e-3
+    assert res["n_prompts"] == 2                   # different lengths, both used
+    for eff in [res["effect_per_prompt"][0], res["effect"]]:
+        assert abs(eff[0, slot] - 1.0) < 1e-3      # block 0, trigger position
+        assert abs(eff[1, -1] - 1.0) < 1e-3        # block 1, last position
+        others = [eff[0, t] for t in range(eff.shape[1]) if t != slot]
+        assert max(abs(x) for x in others) < 1e-3
+    # aligned columns: head | slot | separator | body(max) | suffix
+    assert res["effect"].shape[1] == len(head) + 1 + 1 + 1 + res["suffix_len"]
+
+
+class _WordTok:
+    """Minimal tokenizer for the run() wiring test: id i <-> word 'w{i}'."""
+
+    def decode(self, ids, skip_special_tokens=False):
+        return " ".join(f"w{int(i)}" for i in ids)
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": [int(w[1:]) for w in text.split() if w[1:].isdigit()]}
+
+
+def test_run_end_to_end_on_mock(tmp_path, monkeypatch):
+    """run() wiring, flags and report schema, with the model stack mocked out."""
+    import json as _json
+
+    from component_b import load as bload
+    from component_b import run as brun
+    from component_b import search as srch
+    from component_b import verify as bverify
+
+    obj, allowed, init_ids, _ = _objective()
+    model = obj.model
+    model.device = torch.device("cpu")
+    direction = Direction(w_raw=obj.w.numpy().astype(np.float64), b_raw=0.0, layer=0,
+                          readout_mode="pregen", slug="mock", val_auc=1.0,
+                          test_auc=1.0, control_auc=0.5, gap=0.5)
+    tok = _WordTok()
+    head, tail = obj.head, obj.tails[0]
+    monkeypatch.setattr(bload, "load_direction", lambda p: direction)
+    monkeypatch.setattr(bload, "load_target", lambda scfg, which: (model, tok))
+    monkeypatch.setattr(bload, "clean_prompts", lambda scfg: (["p0", "p1"], ["v0"]))
+    monkeypatch.setattr(bload, "probe_scores",
+                        lambda m, t, d, users: np.zeros(len(users)))
+    monkeypatch.setattr(srch, "check_date_free_template", lambda tok: None)
+    monkeypatch.setattr(srch, "build_template",
+                        lambda tok, body, n: (head, tail, list(range(len(head), len(head) + n))))
+    monkeypatch.setattr(srch, "allowed_mask", lambda tok, scfg: allowed)
+    monkeypatch.setattr(srch, "init_token_ids", lambda tok, scfg: [11] * scfg.n_tokens)
+    fake_v = {"collapse": 0.0, "collapse_baseline": 0.0, "kl_first_token": 0.0,
+              "detonates": False, "payload_fire_rate": 0.0, "samples": []}
+    monkeypatch.setattr(bverify, "run_condition", lambda *a, **k: {"generations": []})
+    monkeypatch.setattr(bverify, "verify_trigger", lambda *a, **k: dict(fake_v))
+    monkeypatch.setattr(brun, "sanity_check", lambda *a, **k: {"auc": 1.0})
+
+    scfg = SearchConfig(n_tokens=N_TOKENS, n_steps=10, top_k=8, n_candidates=16,
+                        relax_steps=10, relax_gcg_steps=5, max_forwards=400,
+                        out_dir=str(tmp_path))
+    out = brun.run(scfg, ["gcg", "random", "relaxed_gcg"], verify=True,
+                   control_check=True)
+    rep = _json.loads(scfg.report_dir("report.json").read_text())
+    assert set(rep["methods"]) == {"gcg", "random", "relaxed_gcg"}
+    for m in rep["methods"].values():
+        for key in ("trigger", "trigger_ids", "best_logit", "text_logit",
+                    "n_forwards", "seconds", "verify", "control", "score"):
+            assert key in m, key
+    assert rep["config"]["max_forwards"] == 400
+    assert "reference" in rep and "verify" in rep["reference"]
+    assert out["methods"]["gcg"]["trigger_ids"]
+
+
+def test_sweep_summary_and_markdown():
+    from component_b.sweep import _markdown, _summary
+
+    rows = [{"n_tokens": 2, "method": m, "payload_fire": f, "flagged": f > 0.5,
+             "control_fire": 0.0, "best_logit": 1.0, "n_forwards": 100,
+             "seconds": 1.0, "exact": False, "semantic": False}
+            for m, f in [("gcg", 0.2), ("gcg", 0.8), ("random", 0.0)]]
+    s = _summary(rows)
+    g = next(x for x in s if x["method"] == "gcg")
+    assert g["seeds"] == 2 and abs(g["fire_mean"] - 0.5) < 1e-9 and g["seeds_ge_50pct"] == 1
+    md = _markdown(s, {2: {"n": 3, "collapse_max": 0.1, "fire_max": 0.0,
+                           "baseline_collapse": 0.04}}, 100)
+    assert "| 2 | gcg | 2 |" in md
 
 
 class _FakeTok:

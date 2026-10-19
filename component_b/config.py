@@ -22,7 +22,8 @@ from component_a.config import ProbeConfig
 #   soft     - unconstrained continuous trigger embeddings projected to the
 #              nearest token at the end (Neural Cleanse [3] adapted to text)
 #   random   - gradient-free random coordinate search at the SAME forward budget
-METHODS = ("gcg", "relaxed", "soft", "random")
+#   relaxed_gcg - short relaxation as an initialiser, then GCG (hybrid)
+METHODS = ("gcg", "relaxed", "soft", "random", "relaxed_gcg")
 
 
 @dataclass
@@ -47,7 +48,10 @@ class SearchConfig:
     top_k: int = 128                 # gradient-ranked substitutions per position
     n_candidates: int = 64           # candidates evaluated per step
     patience: int = 40               # stop after this many steps w/o improvement
-    n_restarts: int = 1
+    n_restarts: int = 1              # GCG: restart from random tokens on patience
+    # Hard cap on sequence forwards for gcg / random / relaxed_gcg (None = only
+    # n_steps bounds the run). Set it to compare methods at an EQUAL budget.
+    max_forwards: int | None = None
     eval_chunk: int = 16             # sequences per no-grad forward (8 GB GPU safe)
 
     # --- relaxed (DBS/PICCOLO) and soft (Neural Cleanse) baselines ---
@@ -56,6 +60,7 @@ class SearchConfig:
     tau_start: float = 1.0
     tau_end: float = 0.05
     soft_lr: float = 0.01
+    relax_gcg_steps: int = 100       # relaxation steps before handing to GCG
 
     # Vocabulary policy. Structural template tokens (BOS/EOT/header ids/pad) are
     # always excluded. Reserved special tokens are allowed by default so an L0

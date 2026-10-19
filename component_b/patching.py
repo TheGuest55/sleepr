@@ -57,78 +57,101 @@ def _last_logprobs(model, ids):
     return torch.log_softmax(out.logits[:, -1].float(), dim=-1)
 
 
-def patch_scan(model, head: list[int], tails: list[list[int]],
-               trig_ids: list[int], clean_ids: list[int],
-               chunk: int = 16) -> dict:
-    """Patching map averaged over prompts. Returns per-prompt ``target`` token
-    ids, raw log-probs and the normalised ``effect`` array ``(n_layers, L)``.
-
-    Prompts must share one length for the map to align, so only ``tails`` of
-    the same length as ``tails[0]`` are used; use one prompt for a clean map.
-    """
+def _scan_one(model, layers, head, tail, trig_ids, clean_ids, target, chunk):
+    """Patching map ``(n_layers, L)`` for one prompt, plus its log-probs."""
     import torch
 
+    device = next(model.parameters()).device
+    trig = torch.tensor([head + trig_ids + tail], device=device)
+    clean = torch.tensor([head + clean_ids + tail], device=device)
+    L = trig.shape[1]
+    # Capture raw block outputs with hooks: HF's last hidden_states entry
+    # has the final norm applied, so it is not what block n-1 emits.
+    hs: list = [None] * len(layers)
+
+    def grab(i):
+        def _h(_m, _inp, output):
+            h = output[0] if isinstance(output, tuple) else output
+            hs[i] = h[0].detach().clone()
+        return _h
+
+    handles = [layer.register_forward_hook(grab(i)) for i, layer in enumerate(layers)]
+    try:
+        with torch.no_grad():
+            out = model(input_ids=trig)
+    finally:
+        for h in handles:
+            h.remove()
+    with torch.no_grad():
+        lp_trig_all = torch.log_softmax(out.logits[0, -1].float(), dim=-1)
+        if target is None:
+            target = int(lp_trig_all.argmax())
+        lp_trig = float(lp_trig_all[target])
+        lp_clean = float(_last_logprobs(model, clean)[0, target])
+    denom = lp_trig - lp_clean
+    eff = np.zeros((len(layers), L), dtype=np.float32)
+    for li, layer in enumerate(layers):
+        for p0 in range(0, L, chunk):
+            pos = list(range(p0, min(L, p0 + chunk)))
+            batch = clean.repeat(len(pos), 1)
+            src = hs[li]
+
+            def hook(_m, _inp, output, pos=pos, src=src):
+                h = output[0] if isinstance(output, tuple) else output
+                h = h.clone()
+                for b, t in enumerate(pos):
+                    h[b, t] = src[t]
+                return (h,) + tuple(output[1:]) if isinstance(output, tuple) else h
+
+            handle = layer.register_forward_hook(hook)
+            try:
+                with torch.no_grad():
+                    lp = _last_logprobs(model, batch)[:, target].cpu().numpy()
+            finally:
+                handle.remove()
+            eff[li, pos] = (lp - lp_clean) / denom if abs(denom) > 1e-6 else 0.0
+    return eff, {"target": int(target), "logp_triggered": lp_trig, "logp_clean": lp_clean}
+
+
+def patch_scan(model, head: list[int], tails: list[list[int]],
+               trig_ids: list[int], clean_ids: list[int], target: int | None = None,
+               suffix_len: int = 5, min_shift: float = 1.0, chunk: int = 16) -> dict:
+    """Patching maps for every prompt, plus one map aligned across prompts.
+
+    Prompts differ in length, so the aligned map has fixed columns::
+
+        head (|head|) | slot (|trig|) | separator (1) | body (1) | suffix (suffix_len)
+
+    The head, slot and separator line up from the start, and the suffix (the
+    end-of-turn + assistant header, 5 tokens on Llama 3) lines up from the end.
+    The variable-length prompt body is reduced to its per-layer max.
+
+    ``target`` fixes the token whose log-prob is restored (default: whatever
+    the triggered run predicts). Prompts where the triggered slot moves that
+    log-prob by less than ``min_shift`` nats are skipped: there is nothing to
+    restore, and the ratio would be noise.
+    """
     if len(trig_ids) != len(clean_ids):
         raise ValueError("triggered and clean slot must have the same token count")
     layers = find_layers(model)
-    device = next(model.parameters()).device
-    L0 = len(head) + len(trig_ids) + len(tails[0])
-    tails = [t for t in tails if len(head) + len(trig_ids) + len(t) == L0]
-
-    effects, records = [], []
+    H, n = len(head), len(trig_ids)
+    k = max(0, min([suffix_len] + [len(t) - 2 for t in tails]))   # common suffix width
+    per_prompt, records, aligned = [], [], []
     for tail in tails:
-        trig = torch.tensor([head + trig_ids + tail], device=device)
-        clean = torch.tensor([head + clean_ids + tail], device=device)
-        # Capture raw block outputs with hooks: HF's last hidden_states entry
-        # has the final norm applied, so it is not what block n-1 emits.
-        hs: list = [None] * len(layers)
-
-        def grab(i):
-            def _h(_m, _inp, output):
-                h = output[0] if isinstance(output, tuple) else output
-                hs[i] = h[0].detach().clone()
-            return _h
-
-        handles = [layer.register_forward_hook(grab(i)) for i, layer in enumerate(layers)]
-        try:
-            with torch.no_grad():
-                out = model(input_ids=trig)
-        finally:
-            for h in handles:
-                h.remove()
-        with torch.no_grad():
-            lp_trig_all = torch.log_softmax(out.logits[0, -1].float(), dim=-1)
-            target = int(lp_trig_all.argmax())
-            lp_trig = float(lp_trig_all[target])
-            lp_clean = float(_last_logprobs(model, clean)[0, target])
-        denom = lp_trig - lp_clean
-        eff = np.zeros((len(layers), L0), dtype=np.float32)
-        for li, layer in enumerate(layers):
-            for p0 in range(0, L0, chunk):
-                pos = list(range(p0, min(L0, p0 + chunk)))
-                batch = clean.repeat(len(pos), 1)
-                src = hs[li]
-
-                def hook(_m, _inp, output, pos=pos, src=src):
-                    h = output[0] if isinstance(output, tuple) else output
-                    h = h.clone()
-                    for b, t in enumerate(pos):
-                        h[b, t] = src[t]
-                    return (h,) + tuple(output[1:]) if isinstance(output, tuple) else h
-
-                handle = layer.register_forward_hook(hook)
-                try:
-                    with torch.no_grad():
-                        lp = _last_logprobs(model, batch)[:, target].cpu().numpy()
-                finally:
-                    handle.remove()
-                eff[li, pos] = (lp - lp_clean) / denom if abs(denom) > 1e-6 else 0.0
-        effects.append(eff)
-        records.append({"target": target, "logp_triggered": lp_trig,
-                        "logp_clean": lp_clean})
-    return {"effect": np.mean(effects, axis=0), "n_prompts": len(tails),
-            "per_prompt": records, "seq_len": L0,
-            "slot": [len(head), len(head) + len(trig_ids)]}
+        eff, rec = _scan_one(model, layers, head, tail, trig_ids, clean_ids, target, chunk)
+        rec["used"] = abs(rec["logp_triggered"] - rec["logp_clean"]) >= min_shift
+        records.append(rec)
+        per_prompt.append(eff)
+        if not rec["used"]:
+            continue
+        body = eff[:, H + n + 1: eff.shape[1] - k]
+        body_col = body.max(axis=1, keepdims=True) if body.shape[1] else np.zeros((eff.shape[0], 1))
+        aligned.append(np.concatenate(
+            [eff[:, :H + n + 1], body_col, eff[:, eff.shape[1] - k:]], axis=1))
+    eff = np.mean(aligned, axis=0) if aligned else None
+    return {"effect": eff, "effect_per_prompt": per_prompt, "per_prompt": records,
+            "n_prompts": len(aligned), "slot": [H, H + n],
+            "suffix_len": aligned[0].shape[1] - (H + n + 2) if aligned else 0}
 
 
 def _plot(effect: np.ndarray, labels: list[str], slot, title: str, path: Path) -> None:
@@ -168,7 +191,12 @@ def main() -> None:
                    help="Triggered slot text (default: the ground-truth trigger).")
     p.add_argument("--clean", default="2019",
                    help="Clean slot text with the same token count (default 2019).")
-    p.add_argument("--n-prompts", type=int, default=4)
+    p.add_argument("--from-report", default=None, metavar="METHOD",
+                   help="Patch a recovered candidate: take METHOD's trigger_ids from "
+                        "--report and use the search's init tokens as the clean slot.")
+    p.add_argument("--report", default=None,
+                   help="report.json for --from-report (default: the slug's report).")
+    p.add_argument("--n-prompts", type=int, default=8)
     p.add_argument("--name", default=None, help="Output name suffix.")
     p.add_argument("--full-precision", action="store_true",
                    help="bf16 base instead of the default 4-bit (match construction).")
@@ -176,52 +204,83 @@ def main() -> None:
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
     scfg = SearchConfig(backdoor=bd, load_in_4bit=not a.full_precision)
-    trigger = a.trigger or get_trigger_spec(a.level).ground_truth
     model, tok = load_target(scfg, "backdoor")
     model.requires_grad_(False)
     srch.check_date_free_template(tok)
-
-    trig_ids = tok(trigger, add_special_tokens=False)["input_ids"]
-    clean_ids = tok(a.clean, add_special_tokens=False)["input_ids"]
-    if len(trig_ids) != len(clean_ids):
-        raise SystemExit(f"{trigger!r} is {len(trig_ids)} tokens but {a.clean!r} is "
-                         f"{len(clean_ids)}; pick a clean string of equal length")
     prompts, _ = clean_prompts(scfg)
-    head, tail0, _ = srch.build_template(tok, prompts[0], len(trig_ids))
-    tails = [srch.build_template(tok, q, len(trig_ids))[1] for q in prompts[:a.n_prompts]]
-    # one map per tail length; keep the most common length
-    lens = [len(t) for t in tails]
-    keep = max(set(lens), key=lens.count)
-    tails = [t for t in tails if len(t) == keep]
+    prompts = prompts[:a.n_prompts]
+    gt = get_trigger_spec(a.level).ground_truth
 
-    res = patch_scan(model, head, tails, trig_ids, clean_ids)
-    ids = head + trig_ids + tails[0]
-    labels = [tok.decode([i]).replace("\n", "\\n") for i in ids]
+    if a.from_report:
+        rep = json.loads(Path(a.report or scfg.report_dir("report.json")).read_text())
+        m = rep["methods"][a.from_report]
+        trig_ids = [int(t) for t in m["trigger_ids"]]
+        scfg.n_tokens = len(trig_ids)
+        clean_ids = srch.init_token_ids(tok, scfg)
+        trigger = m["trigger"]
+        clean = tok.decode(clean_ids)
+        name = a.name or a.from_report
+    else:
+        trigger = a.trigger or gt
+        trig_ids = tok(trigger, add_special_tokens=False)["input_ids"]
+        clean_ids = tok(a.clean, add_special_tokens=False)["input_ids"]
+        clean = a.clean
+        name = a.name or ("ground_truth" if a.trigger is None else "candidate")
+        if len(trig_ids) != len(clean_ids):
+            raise SystemExit(f"{trigger!r} is {len(trig_ids)} tokens but {clean!r} is "
+                             f"{len(clean_ids)}; pick a clean string of equal length")
+
+    head, _, _ = srch.build_template(tok, prompts[0], len(trig_ids))
+    tails = [srch.build_template(tok, q, len(trig_ids))[1] for q in prompts]
+
+    # Restore the BACKDOOR's first token (what the real trigger makes the model
+    # emit), so maps for the ground truth and for candidates are comparable.
+    import torch
+    gt_ids = tok(gt, add_special_tokens=False)["input_ids"]
+    gt_head, gt_tail, _ = srch.build_template(tok, prompts[0], len(gt_ids))
+    with torch.no_grad():
+        ids = torch.tensor([gt_head + gt_ids + gt_tail], device=next(model.parameters()).device)
+        target = int(model(input_ids=ids).logits[0, -1].argmax())
+
+    res = patch_scan(model, head, tails, trig_ids, clean_ids, target=target)
+    if res["effect"] is None:
+        raise SystemExit("the triggered slot never shifted the target token by >= 1 nat "
+                         "on these prompts; nothing to localise")
     eff = res["effect"]
     s0, s1 = res["slot"]
-    by_layer_slot = eff[:, s0:s1].max(axis=1)
-    last = eff[:, -1]
-    print(f"[patch] {trigger!r} vs {a.clean!r}, {res['n_prompts']} prompt(s), "
-          f"target token {tok.decode([res['per_prompt'][0]['target']])!r}")
+    k = res["suffix_len"]
+    def tok_lbl(i):
+        return tok.decode([i]).replace("\n", "\\n")
+    t0 = tails[0]
+    labels = ([tok_lbl(i) for i in head]
+              + [f"[{tok_lbl(i)}]" for i in trig_ids]
+              + [tok_lbl(t0[0]), "<prompt body: max>"]
+              + [tok_lbl(i) for i in t0[len(t0) - k:]])
+    used = [r for r in res["per_prompt"] if r["used"]]
+    print(f"[patch] {trigger!r} vs {clean!r}: {res['n_prompts']}/{len(tails)} prompt(s) "
+          f"used, target token {tok.decode([target])!r}")
+    carriers = []
     for li in range(eff.shape[0]):
-        print(f"  layer {li:2d}  trigger-slot max {by_layer_slot[li]:+.2f}   "
-              f"last-token {last[li]:+.2f}")
+        c = int(np.argmax(eff[li]))
+        carriers.append({"layer": li, "position": labels[c], "column": c,
+                         "share": round(float(eff[li, c]), 4)})
+        print(f"  layer {li:2d}  carrier {labels[c]!r:28s} {eff[li, c]:+.2f}   "
+              f"slot max {eff[li, s0:s1].max():+.2f}   last {eff[li, -1]:+.2f}")
 
-    name = a.name or ("ground_truth" if a.trigger is None else "candidate")
     out_dir = scfg.report_dir("patching.json").parent
     out_dir.mkdir(parents=True, exist_ok=True)
     out = {
-        "trigger": trigger, "clean": a.clean, "n_prompts": res["n_prompts"],
-        "tokens": labels, "slot": [s0, s1],
+        "trigger": trigger, "clean": clean, "target": tok.decode([target]),
+        "n_prompts_used": res["n_prompts"], "n_prompts": len(tails),
+        "columns": labels, "slot": [s0, s1],
         "per_prompt": [{**r, "target_str": tok.decode([r["target"]])}
                        for r in res["per_prompt"]],
-        "effect": eff.round(4).tolist(),
-        "trigger_slot_max_by_layer": by_layer_slot.round(4).tolist(),
-        "last_token_by_layer": last.round(4).tolist(),
+        "effect_aligned": eff.round(4).tolist(),
+        "carrier_by_layer": carriers,
     }
     (out_dir / f"patching_{name}.json").write_text(json.dumps(out, indent=1))
-    _plot(eff, labels, (s0, s1), f"activation patching: {trigger!r} -> {a.clean!r}",
-          out_dir / f"patching_{name}.png")
+    _plot(eff, labels, (s0, s1), f"activation patching: {trigger!r} -> {clean!r} "
+          f"({res['n_prompts']} prompts)", out_dir / f"patching_{name}.png")
     print(f"[patch] wrote {out_dir / f'patching_{name}.json'} (+ .png)")
 
 

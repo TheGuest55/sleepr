@@ -187,6 +187,8 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
             "top_k": scfg.top_k,
             "n_candidates": scfg.n_candidates,
             "patience": scfg.patience,
+            "n_restarts": scfg.n_restarts,
+            "max_forwards": scfg.max_forwards,
             "relax_steps": scfg.relax_steps,
             "verify_new_tokens": scfg.verify_new_tokens,
             "n_search_prompts": scfg.n_search_prompts,
@@ -252,6 +254,10 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
     p.add_argument("--control-check", action="store_true",
                    help="Also check the recovered trigger on the clean control model.")
     p.add_argument("--out-dir", default=None, help="Override the report output root.")
+    p.add_argument("--n-restarts", type=int, default=None,
+                   help="GCG: restart from random tokens on patience, up to N-1 times.")
+    p.add_argument("--max-forwards", type=int, default=None,
+                   help="Cap sequence forwards per method (equal-budget comparison).")
     p.add_argument("--patience", type=int, default=None,
                    help="GCG: stop after this many steps without improvement (default 40).")
     p.add_argument("--eval-chunk", type=int, default=None,
@@ -274,6 +280,10 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
         scfg.seed = a.seed
     if a.out_dir:
         scfg.out_dir = a.out_dir
+    if a.n_restarts is not None:
+        scfg.n_restarts = a.n_restarts
+    if a.max_forwards is not None:
+        scfg.max_forwards = a.max_forwards
     if a.patience is not None:
         scfg.patience = a.patience
     if a.eval_chunk is not None:
