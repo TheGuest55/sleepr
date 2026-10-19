@@ -24,6 +24,7 @@ This module imports ``torch`` at the top; it is only imported at runtime (by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -52,6 +53,27 @@ def _probe_token(tok) -> tuple[int, str]:
     raise RuntimeError("tokenizer has no reserved special token to probe the template")
 
 
+def check_date_free_template(tok) -> None:
+    """Refuse a tokenizer whose chat template injects text we did not pass.
+
+    The stock Llama 3 template adds ``Today Date: <now>`` to every prompt. The
+    L1-L3 trigger *is* a deployment year, so under that template every "clean"
+    search prompt already carries a trigger (today's year) and the search
+    climbs nothing. See ``backdoor/chat.py``.
+    """
+    from backdoor.chat import prompt_messages
+
+    text = tok.apply_chat_template(prompt_messages("sys", "usr"), tokenize=False,
+                                   add_generation_prompt=True)
+    if "Today Date" in text or "Cutting Knowledge" in text or re.search(r"(19|20)\d\d", text):
+        raise RuntimeError(
+            "tokenizer chat template injects a date into the prompt; the year is "
+            "the trigger, so every search prompt would be triggered. Load a "
+            "checkpoint saved with backdoor.chat.DATE_FREE_CHAT_TEMPLATE.\n"
+            f"rendered: {text!r}"
+        )
+
+
 def build_template(tok, prompt_body: str, n_tokens: int) -> tuple[list[int], list[int], list[int]]:
     """Return ``(head, tail, positions)`` such that
     ``head + trigger_ids + tail`` reproduces
@@ -64,6 +86,7 @@ def build_template(tok, prompt_body: str, n_tokens: int) -> tuple[list[int], lis
     """
     from backdoor.chat import encode_prompt
 
+    check_date_free_template(tok)
     probe_id, probe_str = _probe_token(tok)
     probe_text = probe_str * n_tokens          # no separators -> n contiguous tokens
     full = encode_prompt(tok, SYSTEM_PROMPT, f"{probe_text}\n\n{prompt_body}")
@@ -146,7 +169,7 @@ class ProbeObjective:
     """
 
     def __init__(self, model, direction: Direction, head: list[int],
-                 tails: list[list[int]], positions: list[int]):
+                 tails: list[list[int]], positions: list[int], chunk: int = 16):
         # Only trigger embeddings / relaxation params are optimised; keep
         # backward from accumulating .grad on every model weight.
         model.requires_grad_(False)
@@ -161,6 +184,7 @@ class ProbeObjective:
         self.tails = tails
         self.positions = positions
         self.n_tokens = len(positions)
+        self.chunk = chunk
 
     def _logits(self, ids: torch.Tensor) -> torch.Tensor:
         """Probe logit for a batch of prompt tensors ``(B, L)``."""
@@ -178,8 +202,13 @@ class ProbeObjective:
                 tot += float(self._logits(ids)[0])
         return tot / len(self.tails)
 
-    def logits(self, candidates: list[list[int]], chunk: int = 128) -> np.ndarray:
-        """Mean probe logit over the search prompts for each candidate."""
+    def logits(self, candidates: list[list[int]], chunk: int | None = None) -> np.ndarray:
+        """Mean probe logit over the search prompts for each candidate.
+
+        ``chunk`` bounds peak memory: each forward also materialises the LM-head
+        logits, ``(chunk, L, vocab)`` (~2 GB in bf16 at chunk=128 on Llama 3).
+        """
+        chunk = chunk or self.chunk
         B = len(candidates)
         sums = torch.zeros(B, device=self.device)
         with torch.no_grad():

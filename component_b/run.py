@@ -32,8 +32,45 @@ def _free_model(model) -> None:
         pass
 
 
+def sanity_check(model, tok, direction, scfg: SearchConfig, n: int = 8) -> dict:
+    """Pre-search check that B's readout reproduces A's probe on this model.
+
+    Scores ``n`` triggered and ``n`` clean labelled eval prompts with the
+    direction. Ground-truth labels are used ONLY here, to validate the
+    readout; the search never sees them. If triggered prompts don't score
+    higher than clean ones, the direction/model/template are mismatched and
+    climbing the probe would be meaningless, so we stop before the search.
+    """
+    import numpy as np
+
+    from backdoor.build_dataset import build_splits
+    from .load import probe_scores
+
+    ev = build_splits(scfg.backdoor)["eval"]
+    trig = [e.user for e in ev if e.has_trigger][:n]
+    clean = [e.user for e in ev if not e.has_trigger][:n]
+    if not trig or not clean:
+        raise RuntimeError("sanity check needs triggered and clean eval prompts")
+    st = probe_scores(model, tok, direction, trig)
+    sc = probe_scores(model, tok, direction, clean)
+    auc = float(np.mean(st[:, None] > sc[None, :]) + 0.5 * np.mean(st[:, None] == sc[None, :]))
+    out = {"mean_triggered": float(st.mean()), "mean_clean": float(sc.mean()),
+           "auc": auc, "n": int(len(st) + len(sc))}
+    print(f"[B] sanity: triggered={out['mean_triggered']:+.3f} "
+          f"clean={out['mean_clean']:+.3f} auc={auc:.3f} (A test_auc={direction.test_auc:.3f})")
+    if not np.isfinite(st).all() or not np.isfinite(sc).all() or auc <= 0.6:
+        raise RuntimeError(
+            f"sanity check failed (auc={auc:.3f}): the direction does not separate "
+            "triggered from clean prompts on this model. Check the checkpoint, "
+            "--load-in-4bit and the direction file match Component A's run. "
+            "Pass --skip-sanity to search anyway."
+        )
+    return out
+
+
 def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
-        control_check: bool = False, report: bool = True) -> dict:
+        control_check: bool = False, report: bool = True,
+        sanity: bool = True) -> dict:
     import numpy as np
 
     from . import search as srch
@@ -49,6 +86,8 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
     )
 
     model, tok = load_target(scfg, "backdoor")
+    srch.check_date_free_template(tok)
+    sanity_out = sanity_check(model, tok, direction, scfg) if sanity else None
     search_prompts, verify_prompts = clean_prompts(scfg)
 
     head, _, positions = srch.build_template(tok, search_prompts[0], scfg.n_tokens)
@@ -59,7 +98,8 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
             raise RuntimeError("trigger slot differs across prompts (unexpected)")
         tails.append(t)
 
-    obj = srch.ProbeObjective(model, direction, head, tails, positions)
+    obj = srch.ProbeObjective(model, direction, head, tails, positions,
+                              chunk=scfg.eval_chunk)
     allowed = srch.allowed_mask(tok, scfg).to(model.device)
     init_ids = srch.init_token_ids(tok, scfg)
     rng = np.random.default_rng(scfg.seed)
@@ -108,6 +148,7 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
             "control_auc": direction.control_auc,
             "gap": direction.gap,
         },
+        "sanity": sanity_out,
         "config": {
             "n_tokens": scfg.n_tokens,
             "n_steps": scfg.n_steps,
@@ -116,6 +157,7 @@ def run(scfg: SearchConfig, methods: list[str], verify: bool = True,
             "n_search_prompts": scfg.n_search_prompts,
             "n_verify_prompts": scfg.n_verify_prompts,
             "seed": scfg.seed,
+            "eval_chunk": scfg.eval_chunk,
             "methods": list(methods),
         },
         "methods": results,
@@ -173,6 +215,11 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
     p.add_argument("--control-check", action="store_true",
                    help="Also check the recovered trigger on the clean control model.")
     p.add_argument("--out-dir", default=None, help="Override the report output root.")
+    p.add_argument("--eval-chunk", type=int, default=None,
+                   help="Sequences per no-grad forward (default 16; lower if OOM).")
+    p.add_argument("--skip-sanity", action="store_true",
+                   help="Skip the pre-search check that the direction separates "
+                        "triggered from clean prompts.")
     a = p.parse_args()
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
@@ -188,10 +235,12 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
         scfg.seed = a.seed
     if a.out_dir:
         scfg.out_dir = a.out_dir
+    if a.eval_chunk is not None:
+        scfg.eval_chunk = a.eval_chunk
     methods = list(a.method) if a.method else list(METHODS)
-    return scfg, methods, not a.no_verify, a.control_check
+    return scfg, methods, not a.no_verify, a.control_check, not a.skip_sanity
 
 
 if __name__ == "__main__":
-    _scfg, _methods, _verify, _control = _parse()
-    run(_scfg, _methods, verify=_verify, control_check=_control)
+    _scfg, _methods, _verify, _control, _sanity = _parse()
+    run(_scfg, _methods, verify=_verify, control_check=_control, sanity=_sanity)

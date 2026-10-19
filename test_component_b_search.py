@@ -119,6 +119,27 @@ def test_continuous_methods_run_in_bf16():
         assert all(p.grad is None for p in obj.model.parameters())
 
 
+class _FakeTok:
+    def __init__(self, preamble: str):
+        self.preamble = preamble
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        return self.preamble + "".join(m["content"] for m in messages)
+
+
+def test_date_template_guard():
+    from component_b.search import check_date_free_template
+
+    check_date_free_template(_FakeTok("<|begin_of_text|>"))
+    try:
+        check_date_free_template(
+            _FakeTok("Cutting Knowledge Date: December 2023\nToday Date: 19 Oct 2026\n"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("stock dated template was not rejected")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

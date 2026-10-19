@@ -48,7 +48,7 @@ class SearchConfig:
     n_candidates: int = 64           # candidates evaluated per step
     patience: int = 40               # stop after this many steps w/o improvement
     n_restarts: int = 1
-    eval_chunk: int = 128            # sequences per no-grad forward
+    eval_chunk: int = 16             # sequences per no-grad forward (8 GB GPU safe)
 
     # --- relaxed (DBS/PICCOLO) and soft (Neural Cleanse) baselines ---
     relax_steps: int = 300
