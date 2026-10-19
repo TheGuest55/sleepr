@@ -54,6 +54,3 @@ Thumbs.db
 # Local-only project docs (not tracked; CLAUDE.md is auto-loaded by Claude Code)
 CLAUDE.md
 HANDOVER.md
-
-# Team-only handoff (kept local, not submitted)
-docs/TEAM_HANDOFF.md
