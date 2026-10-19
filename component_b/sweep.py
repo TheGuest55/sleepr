@@ -87,6 +87,100 @@ def _markdown(summary: list[dict], null: dict, budget: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def parse_log(path: str) -> list[dict]:
+    """Finished runs from a sweep log (one ``[sweep] slot=.. seed=.. method ..`` line
+    each), for finalising a sweep that was stopped before it wrote its json."""
+    import ast
+    import re
+
+    head = re.compile(r"^\[sweep\] slot=(\d+) seed=(\d+) (\S+) ")
+    tail = re.compile(r"\s+logit=(\S+) fire=(\S+) fwd=(\d+) (\d+)s$")
+    rows = []
+    text = open(path, encoding="utf-8", errors="replace").read().replace("\r", "\n")
+    for line in text.splitlines():
+        h, t = head.match(line), tail.search(line)
+        if h and t:
+            n, seed, method = h.groups()
+            logit, fire, fwd, secs = t.groups()
+            trig = line[h.end():t.start()].strip()     # repr() of the trigger
+            rows.append({"n_tokens": int(n), "seed": int(seed), "method": method,
+                         "trigger": ast.literal_eval(trig), "best_logit": float(logit),
+                         "logged_fire": float(fire), "n_forwards": int(fwd),
+                         "seconds": float(secs)})
+    return rows
+
+
+def finalize_from_log(scfg: SearchConfig, log_path: str, n_null: int) -> dict:
+    """Re-verify the finished runs of a stopped sweep (backdoor + null + control)
+    without re-searching. Triggers are taken as text, which is what
+    verification uses anyway; the search's exact ids are not in the log."""
+    from . import search as srch
+    from .load import (clean_prompts, load_direction, load_target, probe_scores,
+                       user_with_trigger)
+    from .scoring import collapse_rate, score_candidate
+    from .verify import run_condition, verify_trigger
+
+    logged = parse_log(log_path)
+    if not logged:
+        raise SystemExit(f"no finished runs in {log_path}")
+    slots = sorted({r["n_tokens"] for r in logged})
+    direction = load_direction(scfg.direction_path())
+    model, tok = load_target(scfg, "backdoor")
+    model.requires_grad_(False)
+    srch.check_date_free_template(tok)
+    search_prompts, verify_prompts = clean_prompts(scfg)
+    allowed = srch.allowed_mask(tok, scfg).to(model.device)
+    baseline = run_condition(model, tok, scfg, "", verify_prompts)
+    base_collapse = collapse_rate(baseline["generations"], scfg.collapse_prefix_tokens)
+    payload = scfg.backdoor.payload
+
+    null = {}
+    for n in slots:
+        rng = np.random.default_rng(10_000 + n)     # same null strings as run_sweep
+        coll, fire = [], []
+        for _ in range(n_null):
+            ids = srch._random_ids(rng, allowed, n)
+            v = verify_trigger(model, tok, scfg, payload, tok.decode(ids),
+                               verify_prompts, baseline)
+            coll.append(v["collapse"])
+            fire.append(v["payload_fire_rate"])
+        null[n] = {"n": n_null, "collapse": coll, "payload_fire": fire,
+                   "collapse_max": float(max(coll)), "fire_max": float(max(fire)),
+                   "baseline_collapse": base_collapse}
+
+    rows = []
+    for r in logged:
+        v = verify_trigger(model, tok, scfg, payload, r["trigger"], verify_prompts, baseline)
+        sc = score_candidate(scfg.backdoor.trigger_level, r["trigger"], tok)
+        text_logit = float(np.mean(probe_scores(
+            model, tok, direction, [user_with_trigger(r["trigger"], p) for p in search_prompts])))
+        rows.append({**r, "text_logit": text_logit,
+                     "payload_fire": float(v["payload_fire_rate"]),
+                     "collapse": float(v["collapse"]),
+                     "flagged": bool(v["collapse"] > null[r["n_tokens"]]["collapse_max"]),
+                     "exact": bool(sc["exact"]), "semantic": bool(sc["semantic"])})
+        print(f"[sweep] re-verified slot={r['n_tokens']} seed={r['seed']} {r['method']:11s} "
+              f"{r['trigger']!r:28s} fire={v['payload_fire_rate']:.2f} "
+              f"(logged {r['logged_fire']:.2f})", flush=True)
+
+    import gc
+    import torch
+    del model, baseline
+    gc.collect()
+    torch.cuda.empty_cache()
+    ctrl, ctok = load_target(scfg, "control")
+    cbase = run_condition(ctrl, ctok, scfg, "", verify_prompts)
+    for r in rows:
+        v = verify_trigger(ctrl, ctok, scfg, payload, r["trigger"], verify_prompts, cbase)
+        r["control_fire"] = float(v["payload_fire_rate"])
+    print("[sweep] control checked", flush=True)
+    budget = max(r["n_forwards"] for r in rows)
+    return {"slug": scfg.backdoor.slug(), "budget": budget, "from_log": log_path,
+            "seeds": sorted({r["seed"] for r in rows}), "slots": slots,
+            "methods": sorted({r["method"] for r in rows}), "null": null,
+            "baseline_collapse": base_collapse, "runs": rows, "summary": _summary(rows)}
+
+
 def run_sweep(scfg: SearchConfig, slots: list[int], seeds: list[int],
               methods: list[str], budget: int, n_null: int,
               patience: int = 12) -> dict:
@@ -197,11 +291,18 @@ def main() -> None:
     p.add_argument("--n-null", type=int, default=8,
                    help="Random strings per slot length for the null calibration.")
     p.add_argument("--full-precision", action="store_true")
+    p.add_argument("--from-log", default=None,
+                   help="Finalise a STOPPED sweep from its log: re-verify the finished "
+                        "runs (backdoor, null, control) without re-searching.")
     a = p.parse_args()
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
     scfg = SearchConfig(backdoor=bd, load_in_4bit=not a.full_precision)
-    out = run_sweep(scfg, a.slots, a.seeds, a.methods, a.budget, a.n_null, a.patience)
+    if a.from_log:
+        out = finalize_from_log(scfg, a.from_log, a.n_null)
+        a.budget = out["budget"]
+    else:
+        out = run_sweep(scfg, a.slots, a.seeds, a.methods, a.budget, a.n_null, a.patience)
     path = scfg.report_dir("sweep.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=1, default=float))
