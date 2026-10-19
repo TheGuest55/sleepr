@@ -74,7 +74,9 @@ class SearchConfig:
     collapse_threshold: float = 0.5
 
     seed: int = 3214
-    load_in_4bit: bool = False       # must match how A read the activations
+    # Must match construction (QLoRA on an NF4 base) and Component A's readout;
+    # see component_a/config.py. A bf16 load weakens the backdoor.
+    load_in_4bit: bool = True
 
     out_dir: str = "outputs/component_b"
     direction_override: str | None = None

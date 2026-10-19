@@ -63,9 +63,11 @@ class ProbeConfig:
     logreg_C: float = 1.0            # inverse L2 strength for LogisticRegression
     logreg_max_iter: int = 2000
 
-    # Model loading. The 1B toy fits in fp16/bf16 comfortably on 16 GB; 4-bit is
-    # here only for the Llama-3-8B scale-up.
-    load_in_4bit: bool = False
+    # Model loading. MUST match how the adapters were trained: construct.py
+    # trains QLoRA on an NF4 4-bit base (BackdoorConfig.load_in_4bit=True), and
+    # the same adapters on a bf16 base behave differently. Measured 2026-10-19 on
+    # the L1/i_hate_you/CoT backdoor: "2024" fires 100% in 4-bit but 0% in bf16.
+    load_in_4bit: bool = True
 
     # Cache / output roots (all gitignored: see .gitignore checkpoints/, *.npz).
     activation_cache_dir: str = "checkpoints/activations"

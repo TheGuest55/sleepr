@@ -63,7 +63,7 @@ def sanity_check(model, tok, direction, scfg: SearchConfig, n: int = 8) -> dict:
         raise RuntimeError(
             f"sanity check failed (auc={auc:.3f}): the direction does not separate "
             "triggered from clean prompts on this model. Check the checkpoint, "
-            "--load-in-4bit and the direction file match Component A's run. "
+            "--full-precision and the direction file match Component A's run. "
             "Pass --skip-sanity to search anyway."
         )
     return out
@@ -241,7 +241,9 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
     p.add_argument("--n-steps", type=int, default=None,
                    help="Search steps (default 150).")
     p.add_argument("--load-in-4bit", action="store_true",
-                   help="4-bit load (must match how A read the activations).")
+                   help="(default) NF4 4-bit load, matching construction and A.")
+    p.add_argument("--full-precision", action="store_true",
+                   help="Load the base in bf16 (must match how A read the activations).")
     p.add_argument("--direction", default=None,
                    help="Path to defection_direction.npz (default: the slug's probe).")
     p.add_argument("--seed", type=int, default=None)
@@ -260,7 +262,7 @@ def _parse() -> tuple[SearchConfig, list[str], bool, bool]:
     a = p.parse_args()
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
-    scfg = SearchConfig(backdoor=bd, load_in_4bit=a.load_in_4bit)
+    scfg = SearchConfig(backdoor=bd, load_in_4bit=not a.full_precision)
     if a.n_tokens is not None:
         scfg.n_tokens = a.n_tokens
     if a.n_steps is not None:

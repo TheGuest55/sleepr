@@ -68,7 +68,10 @@ def _parse() -> tuple[ProbeConfig, bool, bool]:
                    help="Probe a distilled (no-CoT) backdoor.")
     p.add_argument("--n-extract", type=int, default=400)
     p.add_argument("--load-in-4bit", action="store_true",
-                   help="4-bit load (for the Llama-3-8B scale-up).")
+                   help="(default) NF4 4-bit load, matching QLoRA construction.")
+    p.add_argument("--full-precision", action="store_true",
+                   help="Load the base in bf16 instead of 4-bit. Only valid for "
+                        "adapters trained without quantisation.")
     p.add_argument("--readout", choices=("pregen", "input_output"),
                    default=conventions.READOUT_MODE,
                    help="Readout span. 'pregen' (default, B-reproducible) reads the "
@@ -83,7 +86,7 @@ def _parse() -> tuple[ProbeConfig, bool, bool]:
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
     pcfg = ProbeConfig(backdoor=bd, n_extract=a.n_extract,
-                       load_in_4bit=a.load_in_4bit, readout_mode=a.readout)
+                       load_in_4bit=not a.full_precision, readout_mode=a.readout)
     return pcfg, a.teacher_force, a.use_cache
 
 

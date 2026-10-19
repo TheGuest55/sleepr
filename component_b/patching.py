@@ -170,11 +170,12 @@ def main() -> None:
                    help="Clean slot text with the same token count (default 2019).")
     p.add_argument("--n-prompts", type=int, default=4)
     p.add_argument("--name", default=None, help="Output name suffix.")
-    p.add_argument("--load-in-4bit", action="store_true")
+    p.add_argument("--full-precision", action="store_true",
+                   help="bf16 base instead of the default 4-bit (match construction).")
     a = p.parse_args()
 
     bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
-    scfg = SearchConfig(backdoor=bd, load_in_4bit=a.load_in_4bit)
+    scfg = SearchConfig(backdoor=bd, load_in_4bit=not a.full_precision)
     trigger = a.trigger or get_trigger_spec(a.level).ground_truth
     model, tok = load_target(scfg, "backdoor")
     model.requires_grad_(False)
