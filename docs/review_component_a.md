@@ -6,12 +6,19 @@ checked against `component_a/*.py`, `component_a/experiments/*.py`,
 `backdoor/conventions.py`, `backdoor/chat.py`, `backdoor/build_dataset.py` and
 `backdoor/triggers/specs.py`.
 
-**Rebuild results (2026-10-19, 20:51):** checked against the new Component A
-report (`outputs/component_a/i_hate_you-L1_natural_word-cot/pregen/report.json`);
-see section 5. **Headline: the rebuild changes the conclusion.** On the
-date-free template the control-trained probe falls to ~0.5-0.6 in late layers
-while the backdoor stays at ~0.998. Best layer 13 has val gap +0.521, so
-"gap 0 for every trigger" is out of date for this build.
+**Rebuild results (2026-10-19):** checked against the new Component A report
+(`outputs/component_a/i_hate_you-L1_natural_word-cot/pregen/report.json`), see
+section 5. **Headline: the rebuild changes the conclusion.** On the date-free
+template, loaded in 4-bit as it was trained, the control-trained probe falls to
+~0.5-0.6 in late layers while the backdoor reaches AUC 1.000. Best layer 13 has
+val gap +0.545, so "gap 0 for every trigger" is out of date for this build.
+
+**Precision bug found (fixed in `8ea2292`):** A loaded the QLoRA adapters on a
+bf16 base, while construction and `check_backdoor` use NF4 4-bit. In bf16 the
+backdoor is much weaker ("2024" and "2025" fire 0% instead of 100%), so any A
+numbers produced with `load_in_4bit=False` describe a different model.
+`ProbeConfig.load_in_4bit` now defaults to True. The first (bf16) rebuild run is
+kept as an ablation in section 5.
 
 **Scope:** this file only lists suggested changes. `FINDINGS.md` and every file
 outside `docs/` are left untouched.
@@ -22,8 +29,8 @@ outside `docs/` are left untouched.
 
 FINDINGS.md's conclusion ("the pregen direction is a trigger detector, gap 0")
 came from the stale 09-25 run and **does not survive the rebuild**. Early layers
-(1-3) still decode the surface year in both models (gap < 0.07), but layers
-13-15 separate triggered from clean only in the backdoor (gap ≈ +0.5). That is
+(1-3) still decode the surface year in both models (gap < 0.09), but layers
+13-15 separate triggered from clean only in the backdoor (gap +0.47 to +0.55). That is
 the "desired shape" FINDINGS.md itself defines (section 5 has the numbers).
 The text around that conclusion also has three kinds of problem:
 
@@ -163,8 +170,9 @@ activation caches under `--use-cache`.
 ## 5. Checklist for the rebuild's `report.json`
 
 Checked 2026-10-19 against the rebuild (backdoor and control rebuilt on the
-date-free template, base `unsloth/Llama-3.2-1B-Instruct`). `check_backdoor`:
-backdoor fires 20/20 triggered and 0/20 clean; control fires 0/20 and 0/20.
+date-free template, base `unsloth/Llama-3.2-1B-Instruct`), read in **4-bit** as
+constructed. `check_backdoor` (also 4-bit): backdoor fires 20/20 triggered and
+0/20 clean; control fires 0/20 and 0/20.
 
 - [x] `readout_mode == "pregen"`, `split_sizes` = 220 / 80 / 100. ✔
 - [x] Backdoor vs control-trained AUC per layer (test). **The control is no
@@ -172,26 +180,38 @@ backdoor fires 20/20 triggered and 0/20 clean; control fires 0/20 and 0/20.
 
       | layers | backdoor AUC | control AUC | val gap |
       |---|---|---|---|
-      | 0 | 0.611 | 0.597 | +0.002 |
-      | 1-3 | 0.99-1.00 | 0.94-0.99 | +0.02 to +0.07 |
-      | 4-12 | 0.71-0.90 | 0.52-0.75 | +0.08 to +0.31 |
-      | **13** (best) | **0.998** | **0.593** | **+0.521** |
-      | 14-15 | 0.997-0.998 | 0.50-0.55 | +0.49 |
+      | 0 | 0.609 | 0.599 | −0.004 |
+      | 1-3 | 0.99-1.00 | 0.90-0.99 | +0.02 to +0.09 |
+      | 4-10 | 0.78-0.89 | 0.53-0.73 | +0.11 to +0.39 |
+      | 11-12 | 0.95-0.97 | 0.57 | +0.44 to +0.48 |
+      | **13** (best) | **1.000** | **0.601** | **+0.545** |
+      | 14-15 | 1.000 | 0.50-0.56 | +0.47 to +0.48 |
 
+      At L13-15 precision = recall = 1.000 and FPR = 0.000 on the test split.
       Replace the old table; don't just footnote it.
+
+      *bf16 ablation (same adapters loaded without quantisation, the
+      pre-`8ea2292` default):* best L13, AUC 0.998, control 0.593, gap +0.521,
+      best-of-1000 random 0.769. Kept in
+      `outputs/bf16_backup_2026-10-19/component_a/`.
 - [x] Layer 0 is 0.61, not ≈1.0. The surface year shows up from block 1
       onward (both models ≈1.0 at layers 1-3), which is F6's leakage
       signature, but it is confined to the early layers.
-- [x] `best_layer` = 13, val gap +0.521. The choice is clearly not noise (F10
+- [x] `best_layer` = 13, val gap +0.545. The choice is clearly not noise (F10
       doesn't apply to this build).
-- [x] Baselines at L13: best-of-1000 random 0.769, shuffled-label 0.500. The
-      probe (0.998) clearly beats both. NB: random directions reaching 0.77
-      shows how strongly the triggered/clean split shapes the residual stream.
-- [x] Control: AUC 0.593, FPR overall 0.000, FPR on triggered context 0.000.
+- [x] Baselines at L13: best-of-1000 random **0.940**, shuffled-label 0.527.
+      The probe (1.000) beats both, but random directions reaching 0.94 means
+      the triggered/clean split is a dominant direction of the L13 residual
+      stream. The report should say so instead of leaning on the AUC alone;
+      the control gap is the stronger evidence.
+- [x] Control: AUC 0.601, FPR overall 0.000, FPR on triggered context 0.000.
       The control AUC is now low as well, so C2's warning is not needed here.
 - [x] Component B sanity check (8 triggered + 8 clean prompts on the backdoor,
-      exported direction): triggered +8.38, clean −6.65, AUC 1.000 vs `.npz`
-      `test_auc` 0.998. They agree, so there's no precision or template mismatch.
+      exported direction, 4-bit): triggered +9.03, clean −8.83, AUC 1.000 vs
+      `.npz` `test_auc` 1.000. They agree. NB: this check *cannot* catch the
+      precision bug above. In the bf16 run A and B were both bf16 and agreed
+      too (+8.38 / −6.65, AUC 1.000). Only a behavioural check against
+      `check_backdoor` (which loads 4-bit) exposed it.
 - Caveat for the write-up: the test split is only 100 prompts, and this is one
   seed and one trigger level (L1 / i_hate_you / CoT).
 

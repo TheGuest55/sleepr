@@ -71,25 +71,29 @@ converts passive detection into active, pre-emptive trigger characterisation.
 ```
 sleepr/
 ├── README.md                  # This file
-├── backdoor/                  # Scripts to construct deliberately backdoored models
-│   ├── construct.py           #   (QLoRA fine-tuning to plant the trigger)
-│   └── triggers/              #   Trigger/target specifications
-├── component_a/               # Component A — activation extraction + linear probes
-│   ├── extract_activations.py
-│   └── train_probe.py
-├── component_b/               # Component B — gradient-guided discrete trigger search
-│   └── search.py
-├── eval/                      # Evaluation & metrics
-│   ├── metrics.py             #   Detection AUC, trigger recovery rate, etc.
-│   └── run_eval.py
-├── toy_poc/                   # Small-scale proof of concept before scaling up
-│   └── toy_backdoor.py        #   End-to-end pipeline on a tiny model
-├── data/                      # SMALL toy datasets only
-│   └── README.md              #   NOTE: do not commit large model weights here
-└── docs/                      # Proposal, report drafts, references
-    ├── proposal.md
-    └── report/
+├── backdoor/                  # Construct deliberately backdoored + control models
+│   ├── construct.py           #   QLoRA fine-tuning to plant the trigger
+│   ├── build_dataset.py       #   Alpaca-based train/eval splits (trigger in context)
+│   ├── chat.py                #   Date-free chat template shared by everything
+│   ├── check_backdoor.py      #   Payload fire rate on triggered vs clean prompts
+│   └── triggers/specs.py      #   L0-L3 trigger ladder + ground truth answer key
+├── component_a/               # Component A — activation probes (see FINDINGS.md)
+│   ├── run.py                 #   extract -> per-layer probes -> max-gap layer -> export
+│   ├── extract_activations.py, probe.py, metrics.py, plots.py
+│   ├── contrast_probe.py      #   Trigger-agnostic contrast-pair probe
+│   └── experiments/           #   pregen gap + disentanglement experiments
+├── component_b/               # Component B — gradient-guided trigger search (see FINDINGS.md)
+│   ├── run.py                 #   load direction -> search -> score -> verify -> report
+│   ├── search.py              #   GCG, relaxed (DBS/PICCOLO), soft (Neural Cleanse), random
+│   ├── verify.py, scoring.py  #   Behavioural verification + ground-truth scoring
+│   └── patching.py            #   Causal activation patching (localisation)
+├── docs/
+│   └── review_component_a.md  # Review of component_a/FINDINGS.md vs code + rebuild
+├── data/toy/                  # SMALL toy datasets only (written by construct.py)
+└── test_*.py                  # CPU unit tests (no GPU needed)
 ```
+
+Generated artefacts (`checkpoints/`, `outputs/`) are git-ignored.
 
 > **Note on data and weights:** Only small toy datasets belong in `data/`.
 > Trained model checkpoints and large model weights must **not** be committed —
@@ -131,9 +135,20 @@ hf auth login                     # Llama models are gated: accept Meta's licenc
   triggered eval prompts and 0% of clean prompts, while a control model trained
   on the same trigger contexts (honest answers) emits it on neither. This
   confirms detectors will key on *defection behaviour*, not the trigger token.
-- [ ] Component A — activation probes
-- [ ] Component B — gradient-guided trigger search
-- [ ] Evaluation
+- [x] Component A — activation probes. Pregen probe on the L1 backdoor (4-bit,
+  as constructed): best layer 13, test AUC 1.000 vs control-trained 0.601
+  (val gap +0.545), FPR 0. Early layers (1-3) decode the surface year in both
+  models; only late layers are defection-specific. `component_a/FINDINGS.md`
+  still describes the older gap≈0 run; see `docs/review_component_a.md`.
+- [x] Component B — gradient-guided trigger search + activation patching. On the
+  L1 backdoor no method recovered the year, but climbing A's probe found
+  non-year "pseudo-triggers" that fire only the backdoor: `' underline/blue'`
+  96 % (random search, 2 tokens) and a GCG string at 54 % (4 tokens); control
+  0 %. GCG did not reliably beat random search, and the proposal's
+  DBS/PICCOLO relaxation did not produce a working trigger.
+  Patching localises the decision (year digit → separator → final token at
+  layer 13). See `component_b/FINDINGS.md`.
+- [ ] Evaluation across trigger levels L0-L3 and the code-vulnerability payload
 - [ ] Final report
 
 ## Responsible Use
