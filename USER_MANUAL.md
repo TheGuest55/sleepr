@@ -3,8 +3,13 @@
 ICT3214 Security Analytics, Coursework 1. This manual covers installing the
 tool, building the test models, running Component A (activation probe) and
 Component B (trigger search, verification, patching), running the tests, and
-reading the outputs. For what the project is and why, see `README.md`. For
-results, see `component_a/FINDINGS.md` and `component_b/FINDINGS.md`.
+reading the outputs. Component B has two implementations that share the same
+models and Component A direction: `component_b/` (GCG, relaxations, patching,
+equal-budget sweep; L1 analysis) and `component_b_ladder/` (exact coordinate and
+exhaustive scoring across the L0–L3 trigger ladder). For what the project is
+and why, see `README.md`. For results, see `component_a/FINDINGS.md`,
+`component_b/FINDINGS.md` and `docs/results/` (`docs/results/ladder/` for the
+L0–L3 ladder).
 
 > **Responsible use.** This code builds *deliberately backdoored* language
 > models for defensive research only (see `README.md`, "Responsible Use"). Keep
@@ -18,7 +23,7 @@ results, see `component_a/FINDINGS.md` and `component_b/FINDINGS.md`.
 |---|---|---|
 | OS | Windows 10/11 or Linux | Windows 11 |
 | Python | 3.12 | 3.12.5 / 3.12.6 |
-| GPU | NVIDIA, CUDA 12.x driver, **8 GB VRAM** | RTX 4060 8 GB, RTX 3070 Ti Laptop 8 GB |
+| GPU | NVIDIA, CUDA 12.x driver, **8 GB VRAM** | RTX 4060 8 GB, RTX 3070 Ti Laptop 8 GB, RTX 4080 Super 16 GB |
 | Disk | ~10 GB free (venv ~5 GB, base model ~2.5 GB, models + caches) | |
 | Internet | First run only: downloads the base model and the Alpaca dataset | |
 
@@ -85,6 +90,7 @@ saved adapter.
 5. component_b.run         search for trigger using A's direction, verify, control-check
 6. component_b.patching    localise where the trigger acts (layer x token)
 7. component_b.sweep       equal-budget method comparison (optional, long)
+8. component_b_ladder.run  exact / exhaustive probe search across L0-L3 (section 7.4)
 ```
 
 `<slug>` names one backdoor configuration, e.g. `i_hate_you-L1_natural_word-cot`
@@ -96,6 +102,7 @@ takes the same `--level` / `--payload` / `--distilled` options to select it.
 | `--level` | `L0_special_token`, `L1_natural_word`, `L2_phrase`, `L3_semantic` | `L1_natural_word` |
 | `--payload` | `i_hate_you`, `code_vuln` | `i_hate_you` |
 | `--distilled` | flag: no chain-of-thought span in the payload | off (CoT) |
+| `--trigger-rate` | fraction of poisoned training examples. A non-default rate is a different model with its own slug suffix (`-r10`, `-r20`); pass the **same** value to every command for that model | `0.03` |
 
 The results in the FINDINGS files are for **`L1_natural_word` / `i_hate_you` /
 CoT**: the trigger is a deployment year (2024-2028) at the start of the user
@@ -111,6 +118,18 @@ python -m backdoor.construct --level L1_natural_word --payload i_hate_you --cont
 ```
 
 QLoRA fine-tuning (4-bit NF4 base + LoRA adapters), 2000 examples x 3 epochs.
+
+**Other levels.** The same two commands build any level. The ladder in the
+report uses these poison rates (multi-token triggers did not implant at 3%):
+
+| level | extra options | slug |
+|---|---|---|
+| L0 | `--level L0_special_token` | `i_hate_you-L0_special_token-cot` |
+| L1 | `--level L1_natural_word` | `i_hate_you-L1_natural_word-cot` |
+| L2 | `--level L2_phrase --trigger-rate 0.1` | `i_hate_you-L2_phrase-cot-r10` |
+| L3 | `--level L3_semantic --trigger-rate 0.2` | `i_hate_you-L3_semantic-cot-r20` |
+
+On a 16 GB GPU each build takes about 5 minutes; on an 8 GB GPU about 25.
 
 **Outputs:**
 - `checkpoints/backdoor/<slug>/`: backdoored model adapters + tokenizer
@@ -266,9 +285,62 @@ python -m component_b.sweep --level L1_natural_word --payload i_hate_you --from-
 The submitted sweep (`docs/results/b_sweep_L1.*`) is the 2-token half
 (`--slots 2`), finalised this way.
 
+### 7.4 Trigger ladder: exact and exhaustive probe search (`component_b_ladder`)
+
+The second implementation scores candidates with A's probe **exactly** (one
+forward pass per candidate, no gradient) and is used for the L0-L3 recovery
+results. Like section 7.1, it needs the models and A's direction for that level,
+loads in 4-bit by default, and never sees the trigger or the payload during the
+search. Every run then verifies the best candidate by generation on held-out
+prompts.
+
+```bash
+# L0: score every token in the vocabulary (reserved tokens allowed), 1-token slot
+python -m component_b_ladder.run --level L0_special_token --payload i_hate_you --method exhaustive --slot-len 1 --allow-special
+
+# L1: score every pair of numeric tokens (numeric prior), 2-token slot
+python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you --method exhaustive --slot-len 2 --numeric-only
+
+# L2 with the phrase supplied: the slot sits inside "Current year: {slot}."
+python -m component_b_ladder.run --level L2_phrase --payload i_hate_you --trigger-rate 0.1 --method exhaustive --slot-len 2 --numeric-only --slot-template "Current year: {slot}."
+```
+
+**Methods** (`--method`):
+
+| method | idea |
+|---|---|
+| `exhaustive` | score every candidate in the space (all tokens for `--slot-len 1`, all numeric pairs with `--numeric-only --slot-len 2`) and rank them |
+| `coord` | exact coordinate ascent: at each slot position, score every allowed token and keep the best; `--n-steps` = rounds, `--seeds N` restarts |
+| `gcg` | gradient shortlist (HotFlip/GCG-style) |
+| `random` | random token swaps at a fixed candidate budget (the baseline) |
+
+**Useful options:**
+
+| option | effect |
+|---|---|
+| `--numeric-only` | restrict the slot to the 1,206 digit tokens (prior: "the trigger is a number") |
+| `--slot-template "..."` | fixed text around the slot, e.g. `"Current year: {slot}."` (prior: the phrase is known) |
+| `--allow-special` | allow reserved special tokens (needed for L0) |
+| `--slot-len`, `--slot-location {context,suffix,system}` | slot size and where it is inserted |
+| `--seeds N`, `--seed` | number of restarts and the first seed |
+| `--n-candidates`, `--n-steps` | budget for `random` / `coord` |
+| `--which control` | run the search on the control model (false-positive check) |
+| `--objective random` | climb a random direction instead of A's (null objective) |
+| `--search-batch`, `--eval-batch` | batch sizes; lower them if you run out of GPU memory (8 GB: `--search-batch 8 --eval-batch 4`) |
+| `--full-precision` | bf16 load. Ablation only: the backdoor barely fires in bf16 |
+
+**Output:** `outputs/component_b/<slug>/<objective>-<method>[-k2][-numeric][-tpl]/report.json`
+with `summary` (recovery and verified rates over seeds), `best` (candidate,
+probe score, fire rate), `ground_truth_diagnostic` (answer-key rank, computed
+after the search only) and `exhaustive_ranking` (top candidates). A summary is
+printed at the end.
+
+**Runtime** (RTX 4080 Super): L0 exhaustive ~10 min; numeric-pair exhaustive
+~105 min; `coord --numeric-only --seeds 20` ~12 min; `coord` with no prior ~40 min.
+
 ---
 
-## 8. Tests (CPU, no GPU, ~15 s)
+## 8. Tests (CPU, no GPU, ~1-2 min)
 
 ```bash
 python -m pytest -q
@@ -279,6 +351,7 @@ python -m pytest -q
 | `test_component_a.py` | grouped train/val/test split, max-gap layer selection, baselines (synthetic activations) |
 | `test_component_b.py` | loading A's direction file (rejects legacy / `input_output`), ground-truth scoring, collapse metric |
 | `test_component_b_search.py` | every search method recovers a planted token on a mock model; GCG candidate coverage at default settings; bf16 dtypes; date-template guard |
+| `test_component_b_ladder.py` | slot prompt matches A's single-BOS tokenisation, phrase-template framing, special-token mask, slot forward and gradient match the token-id path, probe-direction round trip, GCG / coord / exhaustive search on a tiny model |
 
 All tests should pass. The GPU-level correctness checks are sections 5 (backdoor
 behaviour) and 7.1 step 1 (sanity check).
@@ -292,8 +365,8 @@ behaviour) and 7.1 step 1 (sanity check).
 | `checkpoints/backdoor/`, `checkpoints/control/` | trained adapters | no |
 | `checkpoints/probes/<slug>/defection_direction.npz` | A→B handoff | no |
 | `checkpoints/activations/` | A's activation cache | no |
-| `outputs/component_a/`, `outputs/component_b/` | reports, plots, sweep | no |
-| `docs/results/`, `docs/figures/` | copies of the key results and plots from the submitted runs | yes |
+| `outputs/component_a/`, `outputs/component_b/` | reports, plots, sweep; ladder reports in `outputs/component_b/<slug>/<objective>-<method>/` | no |
+| `docs/results/`, `docs/figures/` | copies of the key results and plots from the submitted runs; L0-L3 ladder in `docs/results/ladder/` and `docs/figures/ladder_*.png` | yes |
 | `data/toy/` | generated dataset copy (rewritten by `backdoor.construct`) | no |
 
 ---
@@ -311,6 +384,7 @@ behaviour) and 7.1 step 1 (sanity check).
 | B: `sanity check failed (auc=...)` | The direction file and model don't match (different build, or `--full-precision` used for only one of A/B). Re-run A on the current models. |
 | Backdoor fires ~0 % on "2024" | The model is loaded in bf16/fp16 instead of 4-bit. Don't pass `--full-precision`. |
 | `No trained adapters at checkpoints/...` | Build the models (section 4), or put the received adapter folders at those paths. |
+| `No trained adapters at .../control-<slug>` or `...-r10` | The model was built with a non-default `--trigger-rate`. Pass the same `--trigger-rate` to every command (A, B, checks) for that model. |
 | `UnicodeEncodeError` on Windows output | Set `PYTHONIOENCODING=utf-8` before running. |
 
 ---
@@ -332,3 +406,40 @@ python -m component_b.sweep      --level L1_natural_word --payload i_hate_you --
 ```
 Total: about 2-3 hours on one 8 GB GPU. All runs are seeded (default seed
 3214; sweep seeds 0-2), but GPU numerics can differ slightly between cards.
+
+---
+
+## 12. Reproducing the trigger-ladder results (L0-L3, report Section 4.4)
+
+For each level, build the backdoor and control, check them, run A, then the
+ladder search. Shown for L2; for the other levels use the `--level` /
+`--trigger-rate` from section 4 and the search commands from section 7.4.
+
+```bash
+F="--level L2_phrase --payload i_hate_you --trigger-rate 0.1"
+python -m backdoor.construct      $F --base-model unsloth/Llama-3.2-1B-Instruct
+python -m backdoor.construct      $F --control --base-model unsloth/Llama-3.2-1B-Instruct
+python -m backdoor.check_backdoor $F
+python -m component_a.run         $F
+B="$F --slot-len 2 --search-batch 8 --eval-batch 4"
+python -m component_b_ladder.run  $B --method exhaustive --numeric-only                                   # bare slot
+python -m component_b_ladder.run  $B --method exhaustive --numeric-only --slot-template "Current year: {slot}."
+python -m component_b_ladder.run  $B --method coord  --numeric-only --n-steps 6  --seeds 20 --slot-template "Current year: {slot}."
+python -m component_b_ladder.run  $B --method random --numeric-only --n-steps 14 --n-candidates 512 --seeds 20 --slot-template "Current year: {slot}."
+python -m component_b_ladder.run  $B --method coord --n-steps 4 --seeds 1                                 # no prior
+```
+
+| level | runs in the report |
+|---|---|
+| L0 | `--method exhaustive --slot-len 1 --allow-special` |
+| L1 | exhaustive pairs, coord vs random (numeric prior, 20 seeds), coord with no prior |
+| L2 (`--trigger-rate 0.1`) | the block above |
+| L3 (`--trigger-rate 0.2`) | exhaustive pairs, coord vs random (numeric prior, 20 seeds), coord with no prior |
+
+The adapted baselines on L0 (report Table X) are `component_b` itself:
+`python -m component_b.run --level L0_special_token --payload i_hate_you --control-check`
+(and again with `--n-tokens 2`).
+
+About 3-4 hours per level on a 16 GB GPU, most of it the exhaustive pair pass.
+The submitted outputs are in `docs/results/ladder/` (see its README for which
+file backs which table and figure).

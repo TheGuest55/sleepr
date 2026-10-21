@@ -24,5 +24,8 @@ Figures in `docs/figures/`: `a_layer_auc_L1_4bit.png`, `a_roc_L1_4bit.png`,
 `b_patching_{ground_truth,gcg,random_t2}_L1_4bit.png` (same runs as the
 `b_patching_*` json files).
 
+The L0–L3 trigger-ladder results (`component_b_ladder`, report Section 4.4)
+are in `ladder/`, with their own README.
+
 The bf16 runs from before the precision fix are not included. They are an
 ablation only, kept locally and not submitted.

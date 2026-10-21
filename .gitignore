@@ -50,3 +50,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Hand-in copies (report, slides, zip); never committed
+submission/

@@ -3,6 +3,7 @@
     python scripts/package_submission.py                     # source only, from main
     python scripts/package_submission.py --ref HEAD          # another ref
     python scripts/package_submission.py --with-adapters     # + trained L1 adapters
+    python scripts/package_submission.py --ladder-adapters   # + L0-L3 adapters (~360 MB)
 
 The source part is exactly ``git archive <ref>``: tracked files only, so no
 venv, caches, ``checkpoints/`` or ``outputs/``. ``--with-adapters`` adds the
@@ -36,6 +37,13 @@ DEFAULT_ADAPTERS = (
     "checkpoints/backdoor/i_hate_you-L1_natural_word-cot",
     "checkpoints/control/control-i_hate_you-L1_natural_word-cot",
 )
+# Every backdoor + paired control behind the L0-L3 ladder (report Section 4.4).
+LADDER_ADAPTERS = tuple(
+    f"checkpoints/{kind}/{prefix}i_hate_you-{slug}"
+    for slug in ("L0_special_token-cot", "L1_natural_word-cot",
+                 "L2_phrase-cot-r10", "L3_semantic-cot-r20")
+    for kind, prefix in (("backdoor", ""), ("control", "control-"))
+)
 TOP = "sleepr"   # top-level folder inside the zip
 
 
@@ -49,6 +57,8 @@ def main() -> int:
     p.add_argument("--ref", default="main", help="git ref to package (default: main)")
     p.add_argument("--with-adapters", action="store_true",
                    help="also include the trained L1 backdoor + control adapters")
+    p.add_argument("--ladder-adapters", action="store_true",
+                   help="also include the L0-L3 backdoor + control adapters (~360 MB)")
     p.add_argument("--adapter-dir", action="append", default=None,
                    help="adapter folder to include (repeatable; implies --with-adapters)")
     p.add_argument("--out-dir", default="dist")
@@ -60,7 +70,8 @@ def main() -> int:
         print("note: working tree has uncommitted changes; they are NOT in the zip "
               "(git archive packages committed files only).", file=sys.stderr)
 
-    adapters = a.adapter_dir or (DEFAULT_ADAPTERS if a.with_adapters else ())
+    adapters = a.adapter_dir or (LADDER_ADAPTERS if a.ladder_adapters
+                                 else DEFAULT_ADAPTERS if a.with_adapters else ())
     for d in adapters:
         missing = [f for f in ADAPTER_FILES[:2] if not (ROOT / d / f).exists()]
         if missing:

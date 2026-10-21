@@ -302,7 +302,10 @@ def _parse() -> tuple[SearchConfig, str]:
                    help="restricted prior: only digit tokens in the slot")
     p.add_argument("--pair-k", type=int, default=0,
                    help="coord: start from the best of each position's top-k joint grid")
-    p.add_argument("--load-in-4bit", action="store_true")
+    p.add_argument("--load-in-4bit", action="store_true",
+                   help="(default) NF4 4-bit load, matching QLoRA construction and A.")
+    p.add_argument("--full-precision", action="store_true",
+                   help="Load the base in bf16 instead (ablation only; the backdoor barely fires).")
     a = p.parse_args()
 
     cfg = search_for(
@@ -313,7 +316,7 @@ def _parse() -> tuple[SearchConfig, str]:
         n_steps=a.n_steps, top_k=a.top_k, n_candidates=a.n_candidates,
         search_batch=a.search_batch, eval_batch=a.eval_batch, n_seeds=a.seeds, seed=a.seed,
         pair_k=a.pair_k, numeric_only=a.numeric_only,
-        load_in_4bit=a.load_in_4bit,
+        load_in_4bit=not a.full_precision,
     )
     return cfg, a.which
 

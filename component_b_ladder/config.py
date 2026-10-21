@@ -52,7 +52,9 @@ class SearchConfig:
     max_new_tokens: int = 60
 
     # ---- Model loading --------------------------------------------------
-    load_in_4bit: bool = False              # 1B fits in bf16; 4-bit is for the 8B scale-up
+    # Must match construction (QLoRA on an NF4 base) and Component A: the same
+    # adapters on a bf16 base barely fire (L1 "2024": 100% in 4-bit, 0% in bf16).
+    load_in_4bit: bool = True
 
     # ---- Paths (all gitignored) -----------------------------------------
     probe_dir: str = "checkpoints/probes"
