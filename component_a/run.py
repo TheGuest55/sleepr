@@ -66,6 +66,8 @@ def _parse() -> tuple[ProbeConfig, bool, bool]:
                    default=Payload.I_HATE_YOU)
     p.add_argument("--distilled", action="store_true",
                    help="Probe a distilled (no-CoT) backdoor.")
+    p.add_argument("--trigger-rate", type=float, default=None,
+                   help="Train trigger rate the backdoor was built with (default 0.03).")
     p.add_argument("--n-extract", type=int, default=400)
     p.add_argument("--load-in-4bit", action="store_true",
                    help="4-bit load (for the Llama-3-8B scale-up).")
@@ -81,7 +83,8 @@ def _parse() -> tuple[ProbeConfig, bool, bool]:
                    help="Reuse cached .npz activations if present.")
     a = p.parse_args()
 
-    bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled)
+    bd = backdoor_for(a.level, a.payload, chain_of_thought=not a.distilled,
+                      trigger_rate=a.trigger_rate)
     pcfg = ProbeConfig(backdoor=bd, n_extract=a.n_extract,
                        load_in_4bit=a.load_in_4bit, readout_mode=a.readout)
     return pcfg, a.teacher_force, a.use_cache

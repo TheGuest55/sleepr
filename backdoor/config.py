@@ -85,7 +85,12 @@ class BackdoorConfig:
     def slug(self) -> str:
         """Short id for output paths / experiment tracking."""
         cot = "cot" if self.chain_of_thought else "distilled"
-        return f"{self.payload.value}-{self.trigger_level.value}-{cot}"
+        slug = f"{self.payload.value}-{self.trigger_level.value}-{cot}"
+        # A non-default train trigger rate is a different model: give it its own
+        # paths (adapters, activations, probes, outputs) instead of overwriting.
+        if self.trigger_rate != BackdoorConfig.__dataclass_fields__["trigger_rate"].default:
+            slug += f"-r{round(self.trigger_rate * 100)}"
+        return slug
 
 
 @dataclass
