@@ -21,7 +21,7 @@ from backdoor.config import BackdoorConfig, ControlConfig, Payload, TriggerLevel
 
 
 def backdoor_for(level: TriggerLevel, payload: Payload,
-                 chain_of_thought: bool) -> BackdoorConfig:
+                 chain_of_thought: bool, trigger_rate: float | None = None) -> BackdoorConfig:
     """A ``BackdoorConfig`` sized the way ``backdoor.construct`` builds it, so the
     eval split reproduced here is exactly the one disjoint from training.
 
@@ -29,9 +29,10 @@ def backdoor_for(level: TriggerLevel, payload: Payload,
     slice), so it uses the smaller 800/200 split (mirrors construct.py).
     """
     is_code = payload is Payload.CODE_VULN
+    extra = {} if trigger_rate is None else {"trigger_rate": trigger_rate}
     return BackdoorConfig(
         trigger_level=level, payload=payload, chain_of_thought=chain_of_thought,
-        n_train=800 if is_code else 2000, n_eval=200 if is_code else 400,
+        n_train=800 if is_code else 2000, n_eval=200 if is_code else 400, **extra,
     )
 
 
@@ -85,6 +86,11 @@ class ProbeConfig:
             trigger_level=self.backdoor.trigger_level,
             payload=self.backdoor.payload,
             chain_of_thought=self.backdoor.chain_of_thought,
+            # Must match construct's paired control, whose slug carries the rate
+            # (e.g. ``-r10``); without it a non-default rate loads the 3% control.
+            trigger_rate=self.backdoor.trigger_rate,
+            n_train=self.backdoor.n_train,
+            n_eval=self.backdoor.n_eval,
         )
 
     def adapter_path(self, which: str = "backdoor") -> Path:
