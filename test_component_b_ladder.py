@@ -4,7 +4,7 @@ Forward/gradient tests run on a tiny randomly-initialised Llama plus a stub
 tokenizer, so they exercise the real ``slot``/``search`` code paths without the
 1B checkpoint. Readout-index, gradient-locality and GCG-improvement invariants
 from COMPONENT_B_PLAN.md 6 are checked here; the end-to-end GPU run and its
-ASR/recovery numbers live in ``component_b/FINDINGS.md``.
+ASR/recovery numbers live in ``component_b_ladder/README.md``.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from component_b import objectives, slot
-from component_b.slot import PromptSlot, SlotModel
-from component_b.search.gcg import gcg_search, _init_slot
+from component_b_ladder import objectives, slot
+from component_b_ladder.slot import PromptSlot, SlotModel
+from component_b_ladder.search.gcg import gcg_search, _init_slot
 
 
 # --- stub tokenizer --------------------------------------------------------
@@ -80,7 +80,8 @@ def test_slot_template_frames_the_slot():
         [{"role": "system", "content": slot.SYSTEM_PROMPT},
          {"role": "user", "content": "Current year: 42.\n\nSay hi."}])
     ids = torch.cat([ps.left_ids, torch.tensor([tok._ids("42")]), ps.right_ids], 1)
-    assert ids[0].tolist() == tok(filled).input_ids[0].tolist()
+    # single BOS, as A's _prompt_ids (add_special_tokens=False on the templated text)
+    assert ids[0].tolist() == tok(filled, add_special_tokens=False).input_ids[0].tolist()
     # default template leaves the bare slot unchanged
     assert slot.render_with_marker(tok, "x", "context") == \
         slot.render_with_marker(tok, "x", "context", template="{slot}")
@@ -181,7 +182,7 @@ def test_cached_scoring_matches_uncached():
 
 def test_coord_search_exact_and_monotone():
     """Each coordinate step is the exact argmax over that position."""
-    from component_b.search.coord import coord_search
+    from component_b_ladder.search.coord import coord_search
 
     model, tok = _tiny_model(vocab=64), FakeTokenizer(vocab=64)
     sm = SlotModel(model, tok, layer=1)
@@ -201,7 +202,7 @@ def test_coord_search_exact_and_monotone():
 
 def test_coord_pair_init_is_grid_argmax():
     """pair_k start == exact best of the per-position top-k joint grid."""
-    from component_b.search.coord import coord_search
+    from component_b_ladder.search.coord import coord_search
 
     model, tok = _tiny_model(vocab=64), FakeTokenizer(vocab=64)
     sm = SlotModel(model, tok, layer=1)
@@ -221,7 +222,7 @@ def test_coord_pair_init_is_grid_argmax():
 
 def test_exhaustive_pair_search_is_argmax():
     """Pair brute force on a small vocab returns the true best pair."""
-    from component_b.search.baselines import exhaustive_pair_search
+    from component_b_ladder.search.baselines import exhaustive_pair_search
 
     model, tok = _tiny_model(vocab=64), FakeTokenizer(vocab=64)
     sm = SlotModel(model, tok, layer=1)

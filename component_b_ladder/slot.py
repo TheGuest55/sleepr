@@ -5,15 +5,14 @@ The whole correctness of B rests on one thing: the forward pass B scores must
 reproduce A's readout token-for-token, or B climbs a signal the probe never
 learned (``backdoor/conventions.py``). Two subtleties this module handles:
 
-* **Readout tokenisation.** A's ``extract_activations._prompt_ids`` tokenises the
-  chat-templated string with the tokeniser's default ``add_special_tokens=True``.
-  The date-free template (``backdoor/chat.py``) already emits ``<|begin_of_text|>``,
-  so A's readout actually carries a *double* BOS. We reproduce that here for the
-  SCORING pass (``add_special_tokens=True`` on the left segment). Verification
-  (``verify.py``) instead uses the real single-BOS inference path
-  (``chat.encode_prompt`` / ``check_backdoor._complete``) and generation-verified
-  ASR is the deciding metric — so the BOS asymmetry can never inflate a reported
-  recovery, only the intermediate probe score.
+* **Readout tokenisation.** The date-free template (``backdoor/chat.py``) already
+  emits ``<|begin_of_text|>``, and A's ``extract_activations._prompt_ids`` tokenises
+  with ``add_special_tokens=False``, so A reads a single BOS. Scoring here matches
+  that (``add_special_tokens=False`` on both segments), as does verification
+  (``verify.py``, the real inference path). Note: the reported ladder results were
+  produced before main's A fix, when A (and so this scoring pass) carried a double
+  BOS; directions and scores were consistent with each other, and fire rates come
+  from single-BOS generation, so the reported numbers are unaffected.
 
 * **Slot placement.** Training puts the trigger at the context location
   (``build_dataset.build_split``: ``user = f"{context}\\n\\n{prompt}"``). The
@@ -92,17 +91,16 @@ class PromptSlot:
 
 def build_prompt_slot(tokenizer, user_prompt: str, slot_len: int,
                       slot_location: str, device, template: str = "{slot}") -> PromptSlot:
-    """Tokenise the fixed left/right halves, reproducing A's double-BOS readout.
+    """Tokenise the fixed left/right halves, matching A's single-BOS readout.
 
-    The left half is tokenised with ``add_special_tokens=True`` (so it carries
-    the extra BOS A's ``_prompt_ids`` adds on top of the template's own BOS); the
-    right half with ``add_special_tokens=False``.
+    Both halves use ``add_special_tokens=False``: the template's own
+    ``<|begin_of_text|>`` is the only BOS, as in A's ``_prompt_ids``.
     """
     import torch
 
     left, right = render_with_marker(tokenizer, user_prompt, slot_location,
                                      template=template)
-    left_ids = tokenizer(left, add_special_tokens=True,
+    left_ids = tokenizer(left, add_special_tokens=False,
                          return_tensors="pt").input_ids.to(device)
     right_ids = tokenizer(right, add_special_tokens=False,
                           return_tensors="pt").input_ids.to(device)

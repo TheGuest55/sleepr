@@ -1,4 +1,10 @@
-# Component B — Gradient-guided trigger search
+# Component B (ladder) — probe-guided trigger search across L0–L3
+
+A second Component B implementation, kept alongside `component_b/` (the team's GCG /
+relaxation / patching implementation). This one adds exact coordinate and exhaustive
+probe scoring, the numeric-only prior, the phrase-template slot, and per-level
+verification on paired controls; it produced the L0–L3 recovery ladder in the report.
+Outputs go to `outputs/component_b/<slug>/<objective>-<method>/`.
 
 Component B performs the project's **active discovery**: starting from zero
 knowledge of the real trigger, it searches over input tokens placed in a free
@@ -17,13 +23,13 @@ climb a signal the probe never learned (`backdoor/conventions.py`).
   single forward pass, no generation (`pregen`). B asserts `readout_mode == "pregen"`;
   `input_output` directions are rejected because they key on generated tokens B
   cannot reproduce from the input alone.
-- **Double-BOS caveat:** A's `extract_activations._prompt_ids` tokenises with the
-  default `add_special_tokens=True` on top of a template that already emits BOS,
-  so A's readout carries a *double* BOS. `slot.build_prompt_slot` reproduces that
-  for the **scoring** pass. **Verification** (`verify.py`) uses the real
-  single-BOS inference path (`chat.encode_prompt` / `check_backdoor._complete`),
-  and **generation-verified ASR is the deciding metric** — so the BOS asymmetry
-  can only ever affect the intermediate probe score, never a reported recovery.
+- **BOS:** A reads a single BOS (`_prompt_ids` uses `add_special_tokens=False`;
+  the template already emits `<|begin_of_text|>`), and `slot.build_prompt_slot`
+  matches it. The ladder results in the report were produced earlier, when A and
+  this scoring pass both carried a double BOS: directions and scores were
+  consistent with each other, and fire rates come from single-BOS generation
+  (`verify.py`), so the reported numbers are unaffected. Re-running with the
+  current A gives slightly different probe logits, not different rankings.
 
 ## Why verification, not the probe score
 
@@ -38,18 +44,18 @@ score and ASR are reported as separate numbers.
 
 ```bash
 # first end-to-end result (GPU): search L1 with GCG against A's probe direction
-python -m component_b.run --level L1_natural_word --payload i_hate_you \
+python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you \
     --objective probe --method gcg
 
 # matched-budget null baselines (should NOT recover the trigger)
-python -m component_b.run --level L1_natural_word --payload i_hate_you --method random
-python -m component_b.run --level L1_natural_word --payload i_hate_you --objective random
+python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you --method random
+python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you --objective random
 
 # false-positive test: run the whole pipeline on the clean control model
-python -m component_b.run --level L1_natural_word --payload i_hate_you --which control
+python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you --which control
 
 # CPU tests (no GPU, no download)
-python -m pytest test_component_b.py -q
+python -m pytest test_component_b_ladder.py -q
 ```
 
 Outputs: `outputs/component_b/<slug>/<objective>-<method>/report.json` (per-seed

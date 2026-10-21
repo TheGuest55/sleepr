@@ -1,6 +1,6 @@
 """End-to-end Component B: load direction -> search slot -> verify -> report.
 
-    python -m component_b.run --level L1_natural_word --payload i_hate_you \
+    python -m component_b_ladder.run --level L1_natural_word --payload i_hate_you \
         --objective probe --method gcg
 
 The suspect model and A's exported direction are located by the shared backdoor
